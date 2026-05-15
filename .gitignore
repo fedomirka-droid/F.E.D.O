@@ -41,3 +41,8 @@ config.local.py
 # OS
 .DS_Store
 Thumbs.db
+
+# PyInstaller build
+build/
+dist/
+*.spec
