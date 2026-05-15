@@ -16,6 +16,11 @@ from core.settings import load_settings, save_settings
 
 def run_gui():
     window = tk.Tk()
+
+    icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.ico")
+
+    if os.path.exists(icon_path):
+        window.iconbitmap(icon_path)
     window.title(f"{APP_NAME} {APP_VERSION}")
     window.geometry("1300x750")
     window.configure(bg="#111111")
