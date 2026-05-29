@@ -1,0 +1,22 @@
+APP_NAME = "F.E.D.O"
+APP_VERSION = "v1.3"
+
+ASSISTANT_NAME = "F.E.D.O"
+USER_NAME = "товарищ"
+
+# AI backend
+AI_BACKEND = "hybrid"
+LM_STUDIO_URL = "http://127.0.0.1:1234/v1/chat/completions"
+
+# Personality
+ASSISTANT_STYLE = "СССР"
+DEFAULT_PERSONALITY_MODE = "СССР"
+
+# Voice
+VOICE_ENABLED = True
+MICROPHONE_ENABLED = False
+
+# Safety
+PUBLIC_MODE = True
+PROFANITY_MODE = False
+PROFANITY_TRIGGER_PHRASE = "ENABLE PROFANITY MODE"

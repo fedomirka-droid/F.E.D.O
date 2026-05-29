@@ -1,0 +1,14 @@
+requests==2.32.3
+certifi
+colorama
+psutil
+numpy
+PySocks==1.7.1
+customtkinter
+GPUtil
+torch
+sounddevice
+soundfile
+omegaconf
+SpeechRecognition
+pyinstaller
