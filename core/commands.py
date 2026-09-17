@@ -1,8 +1,18 @@
+"""
+F.E.D.O Core — Commands (v1.4)
+
+Локальные команды F.E.D.O.
+Личные данные (имя / город / о пользователе) теперь хранятся
+в структурированном профиле пользователя (core/user_profile.py),
+а не в плоской памяти.
+"""
 from datetime import datetime
 
 from ai.llm_client import chat_history
 from core.logger import clear_log
 from core.memory import remember, recall, get_all_memory
+from core.user_profile import get_field, set_field, get_user_name
+from core.system_monitor import get_system_snapshot, get_system_summary
 from core.pc_commands import (
     open_browser,
     open_youtube,
@@ -15,18 +25,20 @@ from core.pc_commands import (
 )
 
 
-def with_name(text: str):
-    name = recall("имя")
-
-    if name == "Я этого не помню.":
+def with_name(text: str) -> str:
+    """Прикрепить имя пользователя к ответу (если оно известно)."""
+    name = get_user_name()
+    if not name:
         return text
-
     return f"{name}, товарищ. {text}"
 
 
 def handle_command(user_text: str):
     text = user_text.lower().strip().lstrip("- ").strip()
     text = text.replace("ё", "е")
+    # v1.4.2: схлопываем лишние пробелы, чтобы команды не сбились
+    # на "кто  тебя  создал" (двойные пробелы, табы, переводы строк)
+    text = " ".join(text.split())
 
     # Логи
     if text in ["очистка лога", "очисти лог", "очисти лога", "очистить лог"]:
@@ -35,15 +47,15 @@ def handle_command(user_text: str):
     if text in ["покажи лог", "открой лог", "лог"]:
         return with_name(open_log())
 
-    # Память: кто пользователь
+    # Профиль пользователя
     if text.startswith("как меня зовут") or text == "кто я":
-        name = recall("имя")
-        who = recall("кто")
+        name = get_field("name")
+        who = get_field("occupation")
 
         if text == "кто я":
-            return with_name(f"Вы: {who}.")
+            return with_name(f"Вы: {who or '—'}.")
 
-        return with_name(f"Ваше имя: {name}.")
+        return with_name(f"Ваше имя: {name or '—'}.")
 
     if text.startswith("меня зовут "):
         name = text.replace("меня зовут", "", 1).strip().capitalize()
@@ -51,7 +63,7 @@ def handle_command(user_text: str):
         if not name:
             return "Недостаточно данных для сохранения имени, товарищ."
 
-        remember("имя", name)
+        set_field("name", name)
         return f"Данные сохранены: имя = {name}, товарищ."
 
     if text.startswith("я "):
@@ -60,13 +72,43 @@ def handle_command(user_text: str):
         if not info:
             return "Недостаточно данных для сохранения, товарищ."
 
-        remember("кто", info)
+        set_field("occupation", info)
         return with_name(f"Данные сохранены: вы — {info}.")
 
     if text.startswith("мой город "):
         city = text.replace("мой город", "", 1).strip().capitalize()
-        remember("город", city)
+
+        if not city:
+            return "Недостаточно данных для сохранения города, товарищ."
+
+        set_field("city", city)
         return with_name(f"Данные сохранены: город = {city}.")
+
+    # Создатель системы
+    if text.startswith("тебя создал "):
+        creator = text.replace("тебя создал", "", 1).strip().capitalize()
+
+        if not creator:
+            return "Недостаточно данных для сохранения, товарищ."
+
+        set_field("creator", creator)
+        return f"Данные сохранены: создатель = {creator}, товарищ."
+
+    if text in [
+        "кто тебя создал", "кто тебя создал?", "кто твой создатель",
+        "кто создал тебя", "кто создал fedo", "кто создал f.e.d.o",
+    ]:
+        creator = get_field("creator")
+        if not creator:
+            return with_name("Данные о создателе пока не введены. Скажи: тебя создал ...")
+        return with_name(f"Эту систему создал: {creator}.")
+
+    # Системный мониторинг (прямой ответ, без LLM)
+    if text in ["система", "состояние системы", "состояние пк", "состояние компьютера"]:
+        try:
+            return with_name(get_system_summary(get_system_snapshot()))
+        except Exception as e:
+            return f"Ошибка чтения состояния системы: {e}"
 
     # Умные команды ПК
     if "браузер" in text or "google" in text or "гугл" in text:
@@ -106,13 +148,9 @@ def handle_command(user_text: str):
 
     if text.startswith("открой путь"):
         path = text.replace("открой путь", "", 1).strip()
-
-        if not path:
-            return with_name("Недостаточно данных для открытия пути.")
-
         return with_name(open_path(path))
 
-    # Память
+    # Память (общая)
     if text in ["память", "вся память", "/memory"]:
         memory = get_all_memory()
 
@@ -148,9 +186,12 @@ def handle_command(user_text: str):
 Команды F.E.D.O:
 - статус
 - время
+- система
 - помощь
 - выход
 - память
+- тебя создал имя
+- кто тебя создал
 - запомни ключ = значение
 - вспомни ключ
 - найди запрос
@@ -161,6 +202,9 @@ def handle_command(user_text: str):
 - включи музыку
 - покажи лог
 - очисти лог
+
+Спросить о состоянии компьютера можно обычным вопросом:
+"Покажи состояние системы", "Почему компьютер тормозит?"
 """
 
     return None
