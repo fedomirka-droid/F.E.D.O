@@ -17,6 +17,7 @@ F.E.D.O Core — TTS (v1.4.5)
 """
 import sys
 import os
+import re
 import threading
 
 from config import VOICE_ENABLED
@@ -162,6 +163,67 @@ def init_tts():
         return tts_available
 
 
+# v1.4.6: код НЕ озвучивается — из текста перед синтезом вырезается:
+#   1. markdown-блоки ``` ... ``` (и незакрытый блок в конце)
+#   2. если ответ — в основном кодовые строки → молчим полностью
+_FENCE_CLOSED_RE = re.compile(r"```.*?```", re.DOTALL)
+_FENCE_OPEN_RE = re.compile(r"```\w*\s*\n.*$", re.DOTALL)
+
+_CODE_STARTERS = (
+    "def ", "class ", "import ", "return ", "const ",
+    "function ", "if (", "for (", "while (", "else",
+    "echo ", "print(", "public ", "private ",
+    "ls ", "cat ", "cd ", "rm ", "sudo ", "pip ", "pip3 ",
+    "python ", "python3 ", "npm ", "git ", "curl ", "wget ",
+    "mkdir ", "chmod ", "apt ", "dnf ", "systemctl ",
+    "#", "//", "<", ";", "{", "}",
+)
+_CODE_INLINE_MARKERS = (
+    ";", "{", "}", "=>", "::", "()", "=",
+    "import ", "def ", "self.", "C:\\", "http",
+)
+
+
+def _is_code_line(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith(_CODE_STARTERS):
+        return True
+    hits = sum(1 for m in _CODE_INLINE_MARKERS if m in s)
+    return hits >= 2
+
+
+def _strip_code_for_speech(text: str) -> str:
+    """
+    v1.4.6: убрать код из текста перед озвучкой.
+    Возвращает текст, который можно говорить (или "" — молчим).
+    """
+    safe = str(text or "")
+
+    # 1. fenced-блоки кода (включая язык после ```)
+    cleaned = _FENCE_CLOSED_RE.sub(" ", safe)
+    # незакрытый блок в конце (7B часто забывает закрыть)
+    cleaned = _FENCE_OPEN_RE.sub(" ", cleaned)
+    cleaned = cleaned.strip()
+
+    if not cleaned:
+        return ""
+
+    # 2. эвристика: ответ без оградок, но по строкам — код
+    lines = [l for l in cleaned.splitlines() if l.strip()]
+    if lines:
+        code_lines = sum(1 for l in lines if _is_code_line(l))
+        if code_lines / len(lines) >= 0.4:
+            return ""
+
+    # 3. приводим переносы (много пустых строк = длинные паузы у TTS)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+
+    return cleaned.strip()
+
+
 def _segment_by_script(text: str):
     """
     v1.4.5: разбить текст на сегменты (lang, text) по письменности.
@@ -276,7 +338,12 @@ def _speak_blocking(text: str):
     if not VOICE_ENABLED or not text:
         return
 
-    safe_text = _truncate_for_speech(str(text).strip())
+    safe_text = _strip_code_for_speech(str(text).strip())
+    if not safe_text:
+        # чистый код (или CJK) — F.E.D.O. молчит
+        return
+
+    safe_text = _truncate_for_speech(safe_text)
     if not safe_text:
         return
 
