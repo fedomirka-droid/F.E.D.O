@@ -3,6 +3,7 @@ import os
 import threading
 
 from config import VOICE_ENABLED
+from core.settings import load_settings
 
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
@@ -21,6 +22,18 @@ except Exception as error:
 
 model = None
 sample_rate = 48000
+
+
+def _get_speaker():
+    """
+    v1.4: голос Silero берётся из настроек (tts_speaker).
+    Пустое значение = голос по умолчанию модели (совместимо с v4).
+    """
+    try:
+        speaker = str(load_settings().get("tts_speaker", "") or "").strip()
+        return speaker or None
+    except Exception:
+        return None
 
 tts_available = False
 tts_initialized = False
@@ -99,11 +112,19 @@ def _speak_blocking(text: str):
         if not safe_text:
             return
 
-        audio = model.apply_tts(
-            text=safe_text,
-            speaker="aidar",
-            sample_rate=sample_rate
-        )
+        # v1.4: speaker задаётся в настройках (tts_speaker).
+        # Голоса v4_ru: aidar, eugene, baya, kseniya, xenia, random.
+        # Пустое значение — голос модели по умолчанию.
+        tts_kwargs = {
+            "text": safe_text,
+            "sample_rate": sample_rate,
+        }
+
+        speaker = _get_speaker()
+        if speaker:
+            tts_kwargs["speaker"] = speaker
+
+        audio = model.apply_tts(**tts_kwargs)
 
         sd.play(audio, sample_rate)
         sd.wait()

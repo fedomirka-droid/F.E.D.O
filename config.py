@@ -1,5 +1,5 @@
 APP_NAME = "F.E.D.O"
-APP_VERSION = "v1.3"
+APP_VERSION = "v1.4.2"
 
 ASSISTANT_NAME = "F.E.D.O"
 USER_NAME = "товарищ"

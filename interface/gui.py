@@ -9,9 +9,10 @@ except ImportError:
 import customtkinter as ctk
 
 from config import APP_NAME, APP_VERSION
-from ai.llm_client import ask_llm, get_model_name, is_lm_studio_online, clear_chat_history
-from core.commands import handle_command
+from ai.llm_client import get_model_name, is_lm_studio_online, clear_chat_history
+from core.ai_router import route
 from core.logger import log
+from core.system_monitor import get_primary_disk_path
 from core.settings import load_settings, save_settings
 from core.memory import load_memory, save_memory
 from voice.tts import speak
@@ -475,10 +476,9 @@ class FedoApp(ctk.CTk):
         threading.Thread(target=self._process_message, args=(text,), daemon=True).start()
 
     def _process_message(self, text):
+        # v1.4: GUI — только интерфейс. Вся логика идёт через AI Router.
         try:
-            answer = handle_command(text)
-            if not answer:
-                answer = ask_llm(text)
+            answer = route(text)
         except Exception as e:
             answer = f"Ошибка обработки запроса: {e}"
             log(f"[GUI ERROR] {e}")
@@ -522,7 +522,7 @@ class FedoApp(ctk.CTk):
 
     def _boot_sequence(self):
         self._chat_write("Платформа оператора F.E.D.O активна.", "SYSTEM")
-        self._chat_write("Интерфейс v1.3 Stable GUI загружен.", "SYSTEM")
+        self._chat_write(f"Интерфейс {APP_VERSION} загружен. Linux-ready.", "SYSTEM")
         self._update_ai_status()
 
     # =========================
@@ -541,10 +541,12 @@ class FedoApp(ctk.CTk):
         grid.columnconfigure((0, 1), weight=1)
         grid.rowconfigure((0, 1, 2), weight=1)
 
+        disk_path = get_primary_disk_path()
+
         self.cpu_value = self._metric_card(grid, "CPU", 0, 0)
         self.ram_value = self._metric_card(grid, "RAM", 0, 1)
         self.gpu_value = self._metric_card(grid, "GPU / VRAM", 1, 0)
-        self.disk_value = self._metric_card(grid, "DISK C:", 1, 1)
+        self.disk_value = self._metric_card(grid, f"DISK {disk_path}", 1, 1)
         self.ai_value = self._metric_card(grid, "AI CORE", 2, 0)
         self.ai_value.master.grid(columnspan=2)
 
@@ -563,12 +565,14 @@ class FedoApp(ctk.CTk):
         return value
 
     def _start_monitor(self):
+        disk_path = get_primary_disk_path()
+
         def loop():
             while True:
                 try:
                     cpu = psutil.cpu_percent(interval=1)
                     ram = psutil.virtual_memory()
-                    disk = psutil.disk_usage("C:\\")
+                    disk = psutil.disk_usage(disk_path)
                     self.after(0, lambda c=cpu, r=ram, d=disk: self._update_metrics(c, r, d))
                 except Exception as e:
                     log(f"[MONITOR ERROR] {e}")
@@ -714,6 +718,15 @@ class FedoApp(ctk.CTk):
             progress_color=ORANGE,
             text_color=TEXT
         ).pack(anchor="w", padx=10, pady=10)
+
+        self.tts_speaker = ctk.StringVar(value=self.settings.get("tts_speaker", "aidar"))
+        self._entry(box, "Голос (Silero)", self.tts_speaker)
+        ctk.CTkLabel(
+            box,
+            text="aidar — суровый мужской | eugene — мужской | baya, kseniya, xenia — женские | random",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=24, pady=(0, 6))
 
         self._section(box, "Интерфейс")
         self.dev_var = ctk.BooleanVar(value=self.dev_mode)
@@ -897,15 +910,20 @@ class FedoApp(ctk.CTk):
         ctk.CTkButton(btns, text="Подтвердить", fg_color=ORANGE, command=confirm).pack(side="left", padx=8)
 
     def _save_settings(self):
-        self.settings = {
+        # v1.4: сохраняем поверх существующих настроек,
+        # чтобы не терять новые ключи (сложность, мониторинг и т.д.)
+        base = load_settings()
+        base.update({
             "ai_provider": self.ai_provider.get(),
             "gemini_api_key": self.gemini_key.get().strip(),
             "lm_studio_url": self.lm_url.get().strip(),
             "personality_mode": "СССР" if self.personality_mode.get() == "Агрессивный" else self.personality_mode.get(),
             "voice_enabled": self.voice_enabled.get(),
+            "tts_speaker": self.tts_speaker.get().strip(),
             "developer_mode": self.dev_mode
-        }
+        })
 
+        self.settings = base
         save_settings(self.settings)
         clear_chat_history()
         self._chat_write("Настройки сохранены. История чата очищена.", "SYSTEM")
@@ -943,14 +961,19 @@ class FedoApp(ctk.CTk):
         )
         self.terminal_box.pack(fill="both", expand=True, pady=(0, 12))
         self.terminal_box.insert("end", "F.E.D.O Developer Terminal\n")
-        self.terminal_box.insert("end", "Введите команду Windows PowerShell/CMD ниже.\n\n")
+        if os.name == "nt":
+            self.terminal_box.insert("end", "Введите команду PowerShell/CMD ниже.\n\n")
+            placeholder = "C:\\Users\\...>"
+        else:
+            self.terminal_box.insert("end", "Введите команду ниже (bash / Linux).\n\n")
+            placeholder = "$ "
 
         input_frame = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         input_frame.pack(fill="x")
 
         self.term_entry = ctk.CTkEntry(
             input_frame,
-            placeholder_text="D:\\Projects\\Python\\F.E.D.O>",
+            placeholder_text=placeholder,
             fg_color="transparent",
             border_width=0,
             text_color=GREEN,
@@ -977,7 +1000,11 @@ class FedoApp(ctk.CTk):
         self.terminal_box.insert("end", f"\n> {cmd}\n")
         self.terminal_box.see("end")
 
-        blocked = ["format", "shutdown", "del /f", "rmdir /s", "rd /s"]
+        # v1.4: блокировщик расширен для Linux-команд (bash)
+        blocked = [
+            "format", "shutdown", "reboot", "del /f", "rmdir /s", "rd /s",
+            "rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:",
+        ]
         if any(x in cmd.lower() for x in blocked):
             self.terminal_box.insert("end", "[BLOCKED] Опасная команда заблокирована.\n")
             return

@@ -19,6 +19,7 @@ logs/
 settings.json
 memory.json
 data/memory.json
+data/user_profile.json
 
 # Environment files
 .env

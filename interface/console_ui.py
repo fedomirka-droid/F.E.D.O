@@ -1,5 +1,7 @@
 from colorama import Fore, Style, init
 
+from config import APP_VERSION
+
 init(autoreset=True)
 
 
@@ -14,7 +16,7 @@ def show_banner():
 """ + Style.RESET_ALL)
 
     print(Fore.LIGHTBLACK_EX + "Functional Event Detection Operator")
-    print(Fore.YELLOW + "VERSION: 1.0")
+    print(Fore.YELLOW + f"VERSION: {APP_VERSION}")
     print(Fore.LIGHTBLACK_EX + "STATUS: ONLINE")
     print("-" * 45)
 
