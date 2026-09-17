@@ -1,5 +1,5 @@
 """
-F.E.D.O Core — TTS (v1.4.3)
+F.E.D.O Core — TTS (v1.4.5)
 
 Двуязычный голос:
   - Русский: Silero v4_ru (спикер из настройки tts_speaker: aidar, eugene, ...)
@@ -9,8 +9,11 @@ F.E.D.O Core — TTS (v1.4.3)
   - Другие письменности (например, китайский): молчим —
     F.E.D.O. умеет писать, но говорить на них пока не научился.
 
-Язык ответа определяется автоматически по письменности
-(кириллица / латиница).
+Озвучка — ОДНОЙ непрерывной записью, на любом языке и при смешении:
+текст разбивается на сегменты по письменности, каждый синтезируется
+своей моделью (кириллица → v4_ru, латиница → v3_en),
+сегменты склеиваются в один аудиопоток.
+Озвучки строго последовательны (одна запись не перебивает другую).
 """
 import sys
 import os
@@ -95,6 +98,7 @@ def _detect_lang(text: str) -> str:
 def _load_model(lang: str):
     """
     Загрузить Silero-модель для lang ("ru" / "en"), закэшировать.
+    Вызывать, держа _tts_lock (сам лок не берёт).
     Повторные загрузки не выполняются; после сбоя в рамках сессии
     не повторяются (чтобы не hammer'ить скачивание).
     """
@@ -158,29 +162,97 @@ def init_tts():
         return tts_available
 
 
-def _speak_blocking(text: str):
-    if not VOICE_ENABLED or not text:
-        return
+def _segment_by_script(text: str):
+    """
+    v1.4.5: разбить текст на сегменты (lang, text) по письменности.
+    Непрерывная кириллица → "ru", непрерывная латиница → "en";
+    цифры/знаки/пробелы приклеиваются к ближайшему сегменту
+    (в приоритете — слева). Соседние сегменты одного языка сливаются.
 
-    safe_text = str(text).strip()
-    if not safe_text:
-        return
+    Примеры:
+      "Привет, hello!"    → [("ru", "Привет, "), ("en", "hello!")]
+      "Загрузка CPU 42%"  → [("ru", "Загрузка "), ("en", "CPU 42%")]
+      "F.E.D.O. активен." → [("en", "F.E.D.O. "), ("ru", "активен.")]
+    """
+    def char_lang(ch):
+        if "а" <= ch <= "я" or "А" <= ch <= "Я" or ch in "ёЁ":
+            return "ru"
+        if "a" <= ch <= "z" or "A" <= ch <= "Z":
+            return "en"
+        return None
 
-    lang = _detect_lang(safe_text)
+    runs = []
+    for ch in str(text or ""):
+        lang = char_lang(ch)
+        if runs and runs[-1][0] == lang:
+            runs[-1][1].append(ch)
+        else:
+            runs.append([lang, [ch]])
 
-    if lang == "other":
-        # F.E.D.O. умеет писать, но не озвучивать другие письменности
-        return
+    # приклеиваем "чужие" символы (цифры/знаки/пробелы) к соседям
+    merged = []
+    for lang, chars in runs:
+        if lang is None:
+            if merged:
+                merged[-1][1].extend(chars)
+            else:
+                # начало текста "чужими" символами — дождёмся первой
+                # настоящей письменности; если её нет — текст неозвучиваемый
+                merged.append([None, list(chars)])
+        else:
+            if merged and merged[-1][0] is None and len(merged) == 1:
+                merged[-1] = [lang, merged[-1][1] + chars]
+            elif merged and merged[-1][0] == lang:
+                merged[-1][1].extend(chars)
+            else:
+                merged.append([lang, list(chars)])
 
-    with _tts_lock:
-        model = _load_model(lang)
+    if merged and merged[0][0] is None:
+        merged = []
 
+    return [(lang, "".join(chars)) for lang, chars in merged if lang is not None]
+
+
+MAX_TTS_CHARS = 1000
+
+
+def _truncate_for_speech(text: str) -> str:
+    """
+    Ограничить текст для озвучки: до 1000 символов, разрыв —
+    по границе предложения (или хотя бы слова), чтобы не
+    "проглатывать" хвост слова.
+    """
+    if len(text) <= MAX_TTS_CHARS:
+        return text
+
+    cut = text[:MAX_TTS_CHARS]
+    last_sentence = max(cut.rfind(p) for p in (".", "!", "?"))
+    if last_sentence >= MAX_TTS_CHARS // 2:
+        return cut[:last_sentence + 1]
+
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        return cut[:last_space] + "..."
+
+    return cut
+
+
+def _synthesize(lang: str, text: str):
+    """
+    Синтезировать фрагмент текста моделью lang.
+    Вызывать, держа _tts_lock. Возвращает torch-тензор или None.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    model = _load_model(lang)
     if model is None:
-        return
+        return None
 
     try:
         tts_kwargs = {
-            "text": safe_text,
+            "text": text,
             "sample_rate": sample_rate,
         }
 
@@ -193,13 +265,46 @@ def _speak_blocking(text: str):
             # английский: голос из настроек (en_0..en_117, v3_en)
             tts_kwargs["speaker"] = _get_speaker_en()
 
-        audio = model.apply_tts(**tts_kwargs)
+        return model.apply_tts(**tts_kwargs)
+
+    except Exception as error:
+        print(f"[VOICE] Ошибка синтеза ({lang}): {error}")
+        return None
+
+
+def _speak_blocking(text: str):
+    if not VOICE_ENABLED or not text:
+        return
+
+    safe_text = _truncate_for_speech(str(text).strip())
+    if not safe_text:
+        return
+
+    segments = _segment_by_script(safe_text)
+    if not segments:
+        # F.E.D.O. умеет писать, но не озвучивать другие письменности
+        return
+
+    # v1.4.5: ОДНА непрерывная запись: каждый сегмент своей моделью,
+    # затем склейка в единый аудиопоток. Всё (синтез + воспроизведение)
+    # под локом — озвучки строго последовательны и не перебивают друг друга.
+    with _tts_lock:
+        chunks = []
+        for seg_lang, seg_text in segments:
+            chunk = _synthesize(seg_lang, seg_text)
+            if chunk is not None:
+                chunks.append(chunk)
+
+        if not chunks:
+            return
+
+        if len(chunks) == 1:
+            audio = chunks[0]
+        else:
+            audio = torch.cat(chunks, dim=0)
 
         sd.play(audio, sample_rate)
         sd.wait()
-
-    except Exception as error:
-        print(f"[VOICE] Ошибка озвучки ({lang}): {error}")
 
 
 def speak(text: str):
@@ -234,22 +339,21 @@ def audition(lang: str, speaker: str) -> bool:
 
     with _tts_lock:
         model = _load_model(lang)
+        if model is None:
+            return False
 
-    if model is None:
-        return False
-
-    try:
-        audio = model.apply_tts(
-            text=SAMPLE_RU if lang == "ru" else SAMPLE_EN,
-            speaker=speaker,
-            sample_rate=sample_rate,
-        )
-        sd.play(audio, sample_rate)
-        sd.wait()
-        return True
-    except Exception as error:
-        print(f"[VOICE] Ошибка прослушивания ({lang}/{speaker}): {error}")
-        return False
+        try:
+            audio = model.apply_tts(
+                text=SAMPLE_RU if lang == "ru" else SAMPLE_EN,
+                speaker=speaker,
+                sample_rate=sample_rate,
+            )
+            sd.play(audio, sample_rate)
+            sd.wait()
+            return True
+        except Exception as error:
+            print(f"[VOICE] Ошибка прослушивания ({lang}/{speaker}): {error}")
+            return False
 
 
 def get_tts_status():

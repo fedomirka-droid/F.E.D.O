@@ -507,7 +507,7 @@ class FedoApp(ctk.CTk):
         self._update_ai_status()
 
         if self.settings.get("voice_enabled", True):
-            threading.Thread(target=lambda: speak(str(answer)[:600]), daemon=True).start()
+            threading.Thread(target=lambda: speak(str(answer)), daemon=True).start()
 
     def mic_input(self):
         if self.is_processing:
