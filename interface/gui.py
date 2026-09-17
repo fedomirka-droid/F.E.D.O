@@ -9,7 +9,20 @@ except ImportError:
 import customtkinter as ctk
 
 from config import APP_NAME, APP_VERSION
-from ai.llm_client import get_model_name, is_lm_studio_online, clear_chat_history
+from ai.llm_client import get_model_name, is_lm_studio_online, clear_chat_history, set_chat_history_store
+from core.chat_manager import (
+    DEFAULT_FOLDER,
+    ensure_registry,
+    active_chat,
+    create_chat,
+    delete_chat,
+    set_active,
+    add_folder,
+    append_chat_line,
+    read_chat_lines,
+    chat_line_count,
+    list_folders,
+)
 from core.ai_router import route
 from core.logger import log
 from core.system_monitor import get_primary_disk_path
@@ -60,6 +73,11 @@ class FedoApp(ctk.CTk):
         self.configure(fg_color=BG)
 
         self.settings = load_settings()
+
+        # v1.5.8: много-чат (папки, свой файл и своя LLM-память на чат)
+        self.chat_registry = ensure_registry()
+        self.active_chat = active_chat(self.chat_registry)
+
         self.dev_mode = self.settings.get("developer_mode", False)
         self.is_processing = False
         self.dev_clicks = 0
@@ -76,6 +94,7 @@ class FedoApp(ctk.CTk):
         self._setup_context_menu()
         self._build_tabs()
         self._build_chat_page()
+        self._build_chats_page()
         self._build_pc_page()
         self._build_memory_page()
         self._build_settings_page()
@@ -360,7 +379,7 @@ class FedoApp(ctk.CTk):
         self.content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
     def _build_tabs(self):
-        for name in ["Чат", "ПК", "Память", "Настройки"]:
+        for name in ["Чат", "Чаты", "ПК", "Память", "Настройки"]:
             self._add_tab_button(name)
 
         if self.dev_mode:
@@ -402,6 +421,8 @@ class FedoApp(ctk.CTk):
 
         if name == "Память":
             self._refresh_memory()
+        if name == "Чаты":
+            self._refresh_chats_page()
         if name == "Логи" and self.dev_mode:
             self._refresh_logs()
         if name == "Отладка" and self.dev_mode:
@@ -484,35 +505,28 @@ class FedoApp(ctk.CTk):
         self.chat_box.see("end")
         self.chat_box.configure(state="disabled")
 
-        # v1.5.3: архив диалога — data/chats/YYYY-MM-DD.txt (как логи сервера)
+        # v1.5.8: архив диалога — файл АКТИВНОГО чата (data/chats/<папка>/<чаты>.txt)
         self._chat_log_append(text, sender)
 
     def _chat_log_append(self, text, sender="F.E.D.O"):
-        """v1.5.3: дописать реплику в дневной архив чата."""
+        """v1.5.8: дописать реплику в файл активного чата."""
         try:
             from datetime import datetime
-            now = datetime.now()
-            day_dir = os.path.join("data", "chats")
-            os.makedirs(day_dir, exist_ok=True)
-            path = os.path.join(day_dir, now.strftime("%Y-%m-%d") + ".txt")
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(f"[{now.strftime('%H:%M:%S')}] {sender}: {str(text).strip()}\n")
+            if not self.active_chat:
+                return
+            line = f"[{datetime.now().strftime('%H:%M:%S')}] {sender}: {str(text).strip()}"
+            append_chat_line(self.active_chat, line)
         except Exception:
             pass
 
     def _load_chat_archive(self):
-        """v1.5.3: восстановить последний чат из архива в окно (80 последних строк)."""
+        """v1.5.8: восстановить активный чат в окно (80 последних строк)."""
         try:
-            day_dir = os.path.join("data", "chats")
-            if not os.path.isdir(day_dir):
+            if not self.active_chat:
                 return
-            files = sorted(f for f in os.listdir(day_dir) if f.endswith(".txt"))
-            if not files:
-                return
-            with open(os.path.join(day_dir, files[-1]), "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().strip().splitlines()
+            lines = read_chat_lines(self.active_chat, limit=80)
             self.chat_box.configure(state="normal")
-            for line in lines[-80:]:
+            for line in lines:
                 self.chat_box.insert("end", line + "\n")
             self.chat_box.see("end")
             self.chat_box.configure(state="disabled")
@@ -585,7 +599,11 @@ class FedoApp(ctk.CTk):
         self.status_label.configure(text=f"STATUS: {status}")
 
     def _boot_sequence(self):
-        # v1.5.3: восстанавливаем последний чат из архива data/chats/
+        # v1.5.8: LLM-память активного чата
+        if self.active_chat:
+            set_chat_history_store(self.active_chat.get("id", "main"))
+
+        # v1.5.3: восстанавливаем активный чат из его файла
         self._load_chat_archive()
 
         self._chat_write("Платформа оператора F.E.D.O активна.", "SYSTEM")
@@ -763,6 +781,286 @@ class FedoApp(ctk.CTk):
             ).pack(side="left", padx=8)
         except Exception as e:
             log(f"[SHUTDOWN DIALOG ERROR] {e}")
+            dialog.destroy()
+            return
+
+        dialog.after(100, dialog.grab_set)
+
+    # =========================
+    # CHATS PAGE (v1.5.8)
+    # =========================
+
+    def _build_chats_page(self):
+        page = self._make_page("Чаты")
+
+        title = ctk.CTkLabel(page, text="Чаты", font=ctk.CTkFont(size=22, weight="bold"), text_color=TEXT)
+        title.pack(anchor="w", pady=(0, 12))
+
+        # Панель действий: выбор папки, новая папка, новый чат
+        bar = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=12, border_width=1, border_color=BORDER)
+        bar.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(bar, text="Папка:", text_color=MUTED, font=ctk.CTkFont(size=13)).pack(
+            side="left", padx=(14, 6), pady=10
+        )
+
+        self.chats_folder_var = ctk.StringVar(value=DEFAULT_FOLDER)
+        self.chats_folder_menu = ctk.CTkOptionMenu(
+            bar,
+            variable=self.chats_folder_var,
+            values=list_folders(self.chat_registry),
+            fg_color="#0F0F10",
+            button_color=PANEL_2,
+            button_hover_color="#2A2A2D",
+            width=140
+        )
+        self.chats_folder_menu.pack(side="left", padx=6, pady=10)
+
+        ctk.CTkButton(
+            bar,
+            text="＋ Новая папка",
+            width=120,
+            height=30,
+            corner_radius=8,
+            fg_color=PANEL_2,
+            hover_color="#2A2A2D",
+            text_color=TEXT,
+            command=self._new_folder
+        ).pack(side="left", padx=6, pady=10)
+
+        ctk.CTkButton(
+            bar,
+            text="＋ Новый чат",
+            width=120,
+            height=30,
+            corner_radius=8,
+            fg_color=ORANGE,
+            hover_color="#E86D14",
+            command=self._new_chat
+        ).pack(side="left", padx=6, pady=10)
+
+        self.chats_list = ctk.CTkScrollableFrame(page, fg_color=BG)
+        self.chats_list.pack(fill="both", expand=True)
+
+        self._refresh_chats_page()
+
+    def _refresh_chats_page(self):
+        if not hasattr(self, "chats_list"):
+            return
+
+        for w in self.chats_list.winfo_children():
+            w.destroy()
+
+        reg = self.chat_registry = ensure_registry()
+        folders = list_folders(reg)
+
+        current = self.chats_folder_var.get()
+        if current not in folders:
+            current = folders[0]
+        self.chats_folder_menu.configure(values=folders)
+        self.chats_folder_var.set(current)
+
+        by_folder = {}
+        for chat in reg["chats"]:
+            by_folder.setdefault(chat.get("folder", DEFAULT_FOLDER), []).append(chat)
+
+        for folder in folders:
+            chats = by_folder.get(folder, [])
+
+            ctk.CTkLabel(
+                self.chats_list,
+                text=folder.upper(),
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=ORANGE
+            ).pack(anchor="w", padx=10, pady=(14, 4))
+
+            if not chats:
+                ctk.CTkLabel(
+                    self.chats_list,
+                    text="пусто",
+                    text_color=MUTED,
+                    font=ctk.CTkFont(size=11)
+                ).pack(anchor="w", padx=20, pady=2)
+                continue
+
+            for chat in chats:
+                card = ctk.CTkFrame(self.chats_list, fg_color=PANEL, corner_radius=12,
+                                    border_width=1, border_color=BORDER)
+                card.pack(fill="x", padx=10, pady=4)
+
+                is_active = reg.get("active") == chat.get("id")
+
+                ctk.CTkLabel(
+                    card,
+                    text=chat.get("title", "чат") + ("   ● активен" if is_active else ""),
+                    text_color=ORANGE if is_active else TEXT,
+                    font=ctk.CTkFont(size=14, weight="bold" if is_active else "normal")
+                ).pack(side="left", padx=16, pady=10)
+
+                ctk.CTkLabel(
+                    card,
+                    text=f"{chat_line_count(chat)} строк · {chat.get('created', '')}",
+                    text_color=MUTED,
+                    font=ctk.CTkFont(size=11)
+                ).pack(side="left", padx=8)
+
+                ctk.CTkButton(
+                    card,
+                    text="Удалить",
+                    width=80,
+                    fg_color="#2A1414",
+                    hover_color="#3A1919",
+                    text_color=RED,
+                    command=lambda c=chat: self._confirm_delete_chat(c)
+                ).pack(side="right", padx=12)
+
+                ctk.CTkButton(
+                    card,
+                    text="Открыть",
+                    width=90,
+                    fg_color=PANEL_2,
+                    hover_color="#2A2A2D",
+                    text_color=TEXT,
+                    command=lambda c=chat: self._open_chat(c)
+                ).pack(side="right", padx=(0, 8))
+
+    def _open_chat(self, chat):
+        """v1.5.8: открыть чат (активный + его LLM-память)."""
+        set_active(self.chat_registry, chat["id"])
+        self.active_chat = chat
+
+        try:
+            set_chat_history_store(chat.get("id", "main"))
+        except Exception:
+            pass
+
+        self.chat_box.configure(state="normal")
+        self.chat_box.delete("1.0", "end")
+        self.chat_box.configure(state="disabled")
+
+        self.show_page("Чат")
+        self._chat_write(f"Открыт чат: «{chat.get('title', 'чат')}».", "SYSTEM")
+        self._load_chat_archive()
+
+    def _new_chat(self):
+        """v1.5.8: создать новый чат в выбранной папке."""
+        try:
+            title = ctk.CTkInputDialog(
+                text="Название чата:",
+                title="F.E.D.O — Новый чат"
+            ).get_input()
+        except Exception:
+            return
+
+        if title is None or not str(title).strip():
+            return
+
+        folder = self.chats_folder_var.get() or DEFAULT_FOLDER
+        chat = create_chat(self.chat_registry, str(title).strip(), folder)
+        self.active_chat = chat
+
+        try:
+            set_chat_history_store(chat.get("id", "main"))
+        except Exception:
+            pass
+
+        self.chat_box.configure(state="normal")
+        self.chat_box.delete("1.0", "end")
+        self.chat_box.configure(state="disabled")
+
+        self.show_page("Чат")
+        self._chat_write(f"Создан чат: «{chat.get('title')}» (папка: {folder}).", "SYSTEM")
+        self._refresh_chats_page()
+
+    def _new_folder(self):
+        """v1.5.8: создать новую папку."""
+        try:
+            name = ctk.CTkInputDialog(
+                text="Название папки:",
+                title="F.E.D.O — Новая папка"
+            ).get_input()
+        except Exception:
+            return
+
+        if name is None or not str(name).strip():
+            return
+
+        folder = add_folder(self.chat_registry, str(name))
+        self.chats_folder_menu.configure(values=list_folders(self.chat_registry))
+        self.chats_folder_var.set(folder)
+        self._refresh_chats_page()
+
+    def _confirm_delete_chat(self, chat):
+        """v1.5.8: удаление чата (файл + LLM-память)."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("F.E.D.O — Удаление чата")
+        dialog.geometry("400x200")
+        dialog.configure(fg_color=BG)
+        dialog.attributes("-topmost", True)
+
+        title = chat.get("title", "чат")
+
+        try:
+            ctk.CTkLabel(
+                dialog,
+                text=f"Удалить чат «{title}»?",
+                font=ctk.CTkFont(size=17, weight="bold"),
+                text_color=TEXT
+            ).pack(pady=(22, 4))
+
+            ctk.CTkLabel(
+                dialog,
+                text="Файл чата и его LLM-память будут\nудалены без возможности восстановления.",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                justify="center"
+            ).pack(pady=(0, 10))
+
+            btns = ctk.CTkFrame(dialog, fg_color=BG)
+            btns.pack(pady=18)
+
+            def do_delete():
+                delete_chat(self.chat_registry, chat["id"])
+
+                # если удалили активный — переключиться на другой
+                if self.active_chat and self.active_chat.get("id") == chat.get("id"):
+                    reg = ensure_registry()
+                    self.active_chat = active_chat(reg)
+                    try:
+                        set_chat_history_store(
+                            self.active_chat.get("id") if self.active_chat else "main"
+                        )
+                    except Exception:
+                        pass
+
+                dialog.destroy()
+                self._refresh_chats_page()
+
+            ctk.CTkButton(
+                btns,
+                text="Отмена",
+                height=34,
+                width=100,
+                corner_radius=10,
+                fg_color=PANEL_2,
+                hover_color="#2A2A2D",
+                text_color=TEXT,
+                command=dialog.destroy
+            ).pack(side="left", padx=8)
+
+            ctk.CTkButton(
+                btns,
+                text="Удалить",
+                height=34,
+                width=100,
+                corner_radius=10,
+                fg_color=RED,
+                hover_color="#D93F3F",
+                text_color="white",
+                command=do_delete
+            ).pack(side="left", padx=8)
+        except Exception as e:
+            log(f"[CHAT DELETE DIALOG ERROR] {e}")
             dialog.destroy()
             return
 

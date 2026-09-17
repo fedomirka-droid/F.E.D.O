@@ -25,17 +25,33 @@ from core.user_profile import get_profile_context
 
 chat_history = []
 
-# v1.5.3: память между запусками — последние 10 сообщений живут в
-# data/chat_history.json (как на серверах: история не теряется при рестарте)
-CHAT_HISTORY_FILE = os.path.join("data", "chat_history.json")
+# v1.5.3: память между запусками — последние 10 сообщений живут на диске
+# (как на серверах: история не теряется при рестарте)
+# v1.5.8: память У КАЖДОГО ЧАТА своя: data/chat_history/<chat_id>.json
+_HISTORY_FILE = os.path.join("data", "chat_history.json")  # legacy (до v1.5.8)
+
+
+def set_chat_history_store(chat_id: str):
+    """
+    v1.5.8: переключить хранилище LLM-памяти на чат chat_id
+    (вызывается GUI при старте и при переключении чатов).
+    """
+    global _HISTORY_FILE
+    target = os.path.join("data", "chat_history", str(chat_id or "main") + ".json")
+    if target == _HISTORY_FILE:
+        return
+
+    _HISTORY_FILE = target
+    _load_chat_history()
 
 
 def _load_chat_history():
     """v1.5.3: загрузить сохранённую историю (вызывается при старте)."""
     global chat_history
+    chat_history = []
     try:
-        if os.path.exists(CHAT_HISTORY_FILE):
-            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(_HISTORY_FILE):
+            with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
@@ -48,8 +64,8 @@ def _load_chat_history():
 def _save_chat_history():
     """v1.5.3: сохранить историю на диск."""
     try:
-        os.makedirs("data", exist_ok=True)
-        with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
+        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(chat_history[-10:], f, ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -60,8 +76,8 @@ def clear_chat_history():
     chat_history = []
     # v1.5.3: чистим и файл, чтобы память не "возрождалась"
     try:
-        if os.path.exists(CHAT_HISTORY_FILE):
-            os.remove(CHAT_HISTORY_FILE)
+        if os.path.exists(_HISTORY_FILE):
+            os.remove(_HISTORY_FILE)
     except Exception:
         pass
 
