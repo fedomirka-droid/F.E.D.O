@@ -723,7 +723,7 @@ class FedoApp(ctk.CTk):
         self._entry(box, "Голос (Silero)", self.tts_speaker)
         ctk.CTkLabel(
             box,
-            text="Русские голоса: aidar (суровый мужской), eugene, baya, kseniya, xenia · Английский — авто (v4_en)",
+            text="Русские голоса: aidar (суровый мужской), eugene, baya, kseniya, xenia · Английский — авто (v3_en)",
             text_color=MUTED,
             font=ctk.CTkFont(size=11)
         ).pack(anchor="w", padx=24, pady=(0, 6))

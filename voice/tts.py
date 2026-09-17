@@ -3,8 +3,9 @@ F.E.D.O Core — TTS (v1.4.3)
 
 Двуязычный голос:
   - Русский: Silero v4_ru (спикер из настройки tts_speaker: aidar, eugene, ...)
-  - Английский: Silero v4_en (голос модели по умолчанию,
-    подгружается лениво при первом английском ответе)
+  - Английский: Silero v3_en (голос en_0, подгружается лениво
+    при первом английском ответе; у Silero английского v4/v5 нет —
+    последний английский — v3)
   - Другие письменности (например, китайский): молчим —
     F.E.D.O. умеет писать, но говорить на них пока не научился.
 
@@ -100,8 +101,9 @@ def _load_model(lang: str):
         print("[VOICE] Загрузка Silero TTS (русский, v4_ru)...")
         hub_kwargs = dict(language="ru", speaker="v4_ru")
     else:
-        print("[VOICE] Загрузка Silero TTS (английский, v4_en)...")
-        hub_kwargs = dict(language="en", speaker="v4_en")
+        print("[VOICE] Загрузка Silero TTS (английский, v3_en)...")
+        # v4_en/v5_en в Silero не существует — английский = v3_en
+        hub_kwargs = dict(language="en", speaker="v3_en")
 
     try:
         loaded_model, _ = torch.hub.load(
@@ -176,7 +178,9 @@ def _speak_blocking(text: str):
             speaker = _get_speaker()
             if speaker:
                 tts_kwargs["speaker"] = speaker
-        # английский: голос v4_en по умолчанию
+        else:
+            # английский: голос en_0 (у v3_en 118 голосов: en_0..en_117)
+            tts_kwargs["speaker"] = "en_0"
 
         audio = model.apply_tts(**tts_kwargs)
 
