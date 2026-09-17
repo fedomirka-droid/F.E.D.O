@@ -338,6 +338,21 @@ class FedoApp(ctk.CTk):
         )
         self.ai_label.pack(side="right", padx=10)
 
+        # v1.5.7: кнопка выключения F.E.D.O.
+        self.power_btn = ctk.CTkButton(
+            self.header,
+            text="ВЫКЛ",
+            width=76,
+            height=28,
+            corner_radius=8,
+            fg_color="#2A1414",
+            hover_color="#3A1919",
+            text_color=RED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._confirm_shutdown
+        )
+        self.power_btn.pack(side="right", padx=10)
+
         self.tabs_frame = ctk.CTkFrame(self, fg_color=BG)
         self.tabs_frame.pack(fill="x", padx=18, pady=(10, 8))
 
@@ -683,6 +698,75 @@ class FedoApp(ctk.CTk):
             dialog.destroy()
         except Exception:
             pass
+
+    # =========================
+    # SHUTDOWN (v1.5.7)
+    # =========================
+
+    def _confirm_shutdown(self):
+        """v1.5.7: кнопка ВЫКЛ — подтверждение и чистое завершение."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("F.E.D.O — Завершение работы")
+        dialog.geometry("380x190")
+        dialog.configure(fg_color=BG)
+        dialog.attributes("-topmost", True)
+
+        try:
+            ctk.CTkLabel(
+                dialog,
+                text="Выключить F.E.D.O.?",
+                font=ctk.CTkFont(size=18, weight="bold"),
+                text_color=TEXT
+            ).pack(pady=(22, 4))
+
+            ctk.CTkLabel(
+                dialog,
+                text="Чат и память сохранены.\nСистема завершит работу.",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                justify="center"
+            ).pack(pady=(0, 10))
+
+            btns = ctk.CTkFrame(dialog, fg_color=BG)
+            btns.pack(pady=18)
+
+            ctk.CTkButton(
+                btns,
+                text="Отмена",
+                height=34,
+                width=100,
+                corner_radius=10,
+                fg_color=PANEL_2,
+                hover_color="#2A2A2D",
+                text_color=TEXT,
+                command=dialog.destroy
+            ).pack(side="left", padx=8)
+
+            def power_off():
+                try:
+                    self._chat_write("Завершение сессии оператора. Гашу контуры.", "SYSTEM")
+                except Exception:
+                    pass
+                dialog.destroy()
+                self.after(600, self.destroy)
+
+            ctk.CTkButton(
+                btns,
+                text="ВЫКЛ",
+                height=34,
+                width=100,
+                corner_radius=10,
+                fg_color=RED,
+                hover_color="#D93F3F",
+                text_color="white",
+                command=power_off
+            ).pack(side="left", padx=8)
+        except Exception as e:
+            log(f"[SHUTDOWN DIALOG ERROR] {e}")
+            dialog.destroy()
+            return
+
+        dialog.after(100, dialog.grab_set)
 
     # =========================
     # PC
