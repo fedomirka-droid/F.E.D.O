@@ -11,6 +11,9 @@ v1.4:
   - исправлен баг v1.3: системный prompt строился с неверным аргументом,
     из-за чего каждый запрос падал с TypeError.
 """
+import json
+import os
+
 import requests
 
 from config import LM_STUDIO_URL
@@ -22,10 +25,45 @@ from core.user_profile import get_profile_context
 
 chat_history = []
 
+# v1.5.3: память между запусками — последние 10 сообщений живут в
+# data/chat_history.json (как на серверах: история не теряется при рестарте)
+CHAT_HISTORY_FILE = os.path.join("data", "chat_history.json")
+
+
+def _load_chat_history():
+    """v1.5.3: загрузить сохранённую историю (вызывается при старте)."""
+    global chat_history
+    try:
+        if os.path.exists(CHAT_HISTORY_FILE):
+            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    if isinstance(data, list):
+                        chat_history = data[-10:]
+    except Exception:
+        pass
+
+
+def _save_chat_history():
+    """v1.5.3: сохранить историю на диск."""
+    try:
+        os.makedirs("data", exist_ok=True)
+        with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(chat_history[-10:], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 def clear_chat_history():
     global chat_history
     chat_history = []
+    # v1.5.3: чистим и файл, чтобы память не "возрождалась"
+    try:
+        if os.path.exists(CHAT_HISTORY_FILE):
+            os.remove(CHAT_HISTORY_FILE)
+    except Exception:
+        pass
 
 
 def get_current_lm_url() -> str:
@@ -156,6 +194,7 @@ def ask_llm(
         messages.append({"role": "system", "content": "\n\n".join(context_parts)})
 
     chat_history.append({"role": "user", "content": user_text})
+    _save_chat_history()
     messages += chat_history[-10:]
 
     model_name = get_model_name()
@@ -165,10 +204,14 @@ def ask_llm(
     if model_name == "OFFLINE":
         return "LM Studio недоступна. Запусти LM Studio и включи локальный сервер."
 
+    # v1.5.5: Агрессивному режиму нужна более высокая температура —
+    # иначе модель цепляется за вежливые шаблонные фразы
+    temperature = 0.9 if settings.get("personality_mode", "СССР") == "Агрессивный" else 0.6
+
     data = {
         "model": model_name,
         "messages": messages,
-        "temperature": 0.6,
+        "temperature": temperature,
         "max_tokens": _get_max_tokens(settings.get("answer_mode", "normal"), complexity),
     }
 
@@ -184,6 +227,7 @@ def ask_llm(
         chat_history.append({"role": "assistant", "content": answer})
         if len(chat_history) > 10:
             chat_history = chat_history[-10:]
+        _save_chat_history()
 
         return answer
 
@@ -191,3 +235,7 @@ def ask_llm(
         return "LM Studio недоступна. Запусти LM Studio и включи локальный сервер."
     except Exception as e:
         return f"Ошибка подключения к LM Studio: {e}"
+
+
+# v1.5.3: подхватываем историю при импорте модуля (один раз при старте)
+_load_chat_history()

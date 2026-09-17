@@ -66,6 +66,16 @@ def handle_command(user_text: str):
         set_field("name", name)
         return f"Данные сохранены: имя = {name}, товарищ."
 
+    # v1.5.4: алиас смены имени
+    if text.startswith("зови меня "):
+        name = text.replace("зови меня", "", 1).strip().capitalize()
+
+        if not name:
+            return "Недостаточно данных для сохранения имени, товарищ."
+
+        set_field("name", name)
+        return f"Принято. Теперь буду обращаться к тебе как «{name}»."
+
     if text.startswith("я "):
         info = text.replace("я", "", 1).strip().capitalize()
 
@@ -190,6 +200,8 @@ def handle_command(user_text: str):
 - помощь
 - выход
 - память
+- меня зовут имя / зови меня имя
+- как меня зовут
 - тебя создал имя
 - кто тебя создал
 - запомни ключ = значение

@@ -15,7 +15,7 @@ from core.logger import log
 from core.system_monitor import get_primary_disk_path
 from core.settings import load_settings, save_settings
 from core.memory import load_memory, save_memory
-from voice.tts import speak
+from voice.tts import speak, preload_tts_models
 from voice.stt import listen_microphone
 
 
@@ -63,11 +63,9 @@ class FedoApp(ctk.CTk):
         self.dev_mode = self.settings.get("developer_mode", False)
         self.is_processing = False
         self.dev_clicks = 0
-        self.secret_aggressive_unlocked = False
-
-        if self.settings.get("personality_mode") == "Агрессивный":
-            self.settings["personality_mode"] = "СССР"
-            save_settings(self.settings)
+        # v1.5.1: разблокировка 18+ теперь персистентна (подтверждена один раз —
+        # режим доступен между запусками) и реально сохраняется в файл
+        self.secret_aggressive_unlocked = self.settings.get("aggressive_unlocked", False)
 
         self.pages = {}
         self.tab_buttons = {}
@@ -471,6 +469,41 @@ class FedoApp(ctk.CTk):
         self.chat_box.see("end")
         self.chat_box.configure(state="disabled")
 
+        # v1.5.3: архив диалога — data/chats/YYYY-MM-DD.txt (как логи сервера)
+        self._chat_log_append(text, sender)
+
+    def _chat_log_append(self, text, sender="F.E.D.O"):
+        """v1.5.3: дописать реплику в дневной архив чата."""
+        try:
+            from datetime import datetime
+            now = datetime.now()
+            day_dir = os.path.join("data", "chats")
+            os.makedirs(day_dir, exist_ok=True)
+            path = os.path.join(day_dir, now.strftime("%Y-%m-%d") + ".txt")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"[{now.strftime('%H:%M:%S')}] {sender}: {str(text).strip()}\n")
+        except Exception:
+            pass
+
+    def _load_chat_archive(self):
+        """v1.5.3: восстановить последний чат из архива в окно (80 последних строк)."""
+        try:
+            day_dir = os.path.join("data", "chats")
+            if not os.path.isdir(day_dir):
+                return
+            files = sorted(f for f in os.listdir(day_dir) if f.endswith(".txt"))
+            if not files:
+                return
+            with open(os.path.join(day_dir, files[-1]), "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().strip().splitlines()
+            self.chat_box.configure(state="normal")
+            for line in lines[-80:]:
+                self.chat_box.insert("end", line + "\n")
+            self.chat_box.see("end")
+            self.chat_box.configure(state="disabled")
+        except Exception:
+            pass
+
     def send_message(self):
         if self.is_processing:
             return
@@ -537,9 +570,119 @@ class FedoApp(ctk.CTk):
         self.status_label.configure(text=f"STATUS: {status}")
 
     def _boot_sequence(self):
+        # v1.5.3: восстанавливаем последний чат из архива data/chats/
+        self._load_chat_archive()
+
         self._chat_write("Платформа оператора F.E.D.O активна.", "SYSTEM")
         self._chat_write(f"Интерфейс {APP_VERSION} загружен. Linux-ready.", "SYSTEM")
         self._update_ai_status()
+
+        # v1.5.3: предзагрузка голосовых моделей в фоне
+        # (первый ответ не ждёт скачивания)
+        if self.settings.get("voice_enabled", True):
+            threading.Thread(target=preload_tts_models, daemon=True).start()
+
+        # v1.5.4: имя задаёт сам пользователь — при первом запуске
+        # спрашиваем один раз, дальше можно менять в чате: «меня зовут ...»
+        try:
+            from core.user_profile import get_field
+            if not str(get_field("name") or "").strip():
+                self.after(400, self._ask_user_name)
+        except Exception:
+            pass
+
+    # =========================
+    # USER NAME (v1.5.4)
+    # =========================
+
+    def _ask_user_name(self):
+        """v1.5.4: первый запуск — пользователь вводит своё имя сам."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("F.E.D.O — Как тебя зовут?")
+        dialog.geometry("440x200")
+        dialog.configure(fg_color=BG)
+        dialog.attributes("-topmost", True)
+
+        try:
+            ctk.CTkLabel(
+                dialog,
+                text="Как тебя зовут?",
+                font=ctk.CTkFont(size=18, weight="bold"),
+                text_color=TEXT
+            ).pack(pady=(22, 4))
+
+            ctk.CTkLabel(
+                dialog,
+                text="F.E.D.O. будет обращаться к тебе по имени.\nПозже можно поменять: «меня зовут ...»",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                justify="center"
+            ).pack(pady=(0, 10))
+
+            name_var = ctk.StringVar()
+            entry = ctk.CTkEntry(
+                dialog,
+                textvariable=name_var,
+                placeholder_text="Твоё имя",
+                height=38,
+                corner_radius=10,
+                fg_color="#0F0F10",
+                border_width=1,
+                border_color=BORDER,
+                text_color=TEXT
+            )
+            entry.pack(pady=(0, 12), padx=60, fill="x")
+            entry.focus_set()
+            entry.bind("<Return>", lambda e: self._save_user_name(dialog, name_var))
+
+            ctk.CTkButton(
+                dialog,
+                text="Пропустить",
+                height=34,
+                corner_radius=10,
+                fg_color=PANEL_2,
+                hover_color="#2A2A2D",
+                text_color=TEXT,
+                command=lambda: self._save_user_name(dialog, name_var, skip=True)
+            ).pack(side="left", padx=8, pady=(0, 18))
+
+            ctk.CTkButton(
+                dialog,
+                text="OK",
+                height=34,
+                width=100,
+                corner_radius=10,
+                fg_color=ORANGE,
+                hover_color="#E86D14",
+                command=lambda: self._save_user_name(dialog, name_var)
+            ).pack(side="left", padx=(0, 8), pady=(0, 18))
+        except Exception as e:
+            log(f"[NAME DIALOG ERROR] {e}")
+            dialog.destroy()
+            return
+
+        dialog.after(100, dialog.grab_set)
+
+    def _save_user_name(self, dialog, name_var, skip=False):
+        """v1.5.4: сохранить имя из окна первого запуска."""
+        from core.user_profile import set_field
+
+        name = name_var.get().strip() if not skip else ""
+
+        if name:
+            set_field("name", name)
+            try:
+                self._chat_write(
+                    f"Принято. Теперь я буду обращаться к тебе как «{name}».",
+                    "SYSTEM"
+                )
+            except Exception:
+                pass
+
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
 
     # =========================
     # PC
@@ -905,18 +1048,31 @@ class FedoApp(ctk.CTk):
                 command=lambda l=lang, v=value: self._audition(l, v)
             ).pack(side="right", padx=(8, 4))
 
+    def _set_tts_status(self, text):
+        """Обновить строку статуса прослушивания (Настройки + мастер установки)."""
+        try:
+            self._tts_status.configure(text=text)
+        except Exception:
+            pass
+        wizard_status = getattr(self, "_wizard_tts_status", None)
+        if wizard_status is not None:
+            try:
+                wizard_status.configure(text=text)
+            except Exception:
+                pass
+
     def _audition(self, lang, speaker):
         """v1.4.5: проиграть фразу-пример выбранным голосом (фоновый поток)."""
         if getattr(self, "_audition_busy", False):
             return
 
         if not self.voice_enabled.get():
-            self._tts_status.configure(text="Голос отключён — включите переключатель выше.")
+            self._set_tts_status("Голос отключён — включите переключатель выше.")
             return
 
         self._audition_busy = True
         self._audition_done = False
-        self._tts_status.configure(text="Прослушивание (первый раз — загрузка модели)...")
+        self._set_tts_status("Прослушивание (первый раз — загрузка модели)...")
 
         def work():
             try:
@@ -937,7 +1093,7 @@ class FedoApp(ctk.CTk):
 
         self._audition_done = False
         self._audition_busy = False
-        self._tts_status.configure(text="Готово.")
+        self._set_tts_status("Готово.")
 
     def _rebuild_settings_page(self):
         if "Настройки" in self.pages:
@@ -971,24 +1127,118 @@ class FedoApp(ctk.CTk):
             self.dev_clicks = 0
 
             if not self.secret_aggressive_unlocked:
+                # v1.5.1: сначала подтверждение 18+ и ответственности
+                self._show_adult_confirm()
+            else:
+                # уже подтверждено — просто включаем режим
+                self.settings["personality_mode"] = "Агрессивный"
+                save_settings(self.settings)
+
+                self._rebuild_settings_page()
+
+                if hasattr(self, "personality_mode"):
+                    self.personality_mode.set("Агрессивный")
+
+                self.show_page("Настройки")
+
+    def _show_adult_confirm(self):
+        """v1.5.1: взрослая функция — 18+ и принятие ответственности."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("F.E.D.O — ВЗРОСЛАЯ ФУНКЦИЯ")
+        dialog.geometry("560x400")
+        dialog.configure(fg_color=BG)
+        dialog.attributes("-topmost", True)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        age_var = ctk.BooleanVar(value=False)
+        resp_var = ctk.BooleanVar(value=False)
+
+        try:
+            ctk.CTkLabel(
+                dialog,
+                text="ВЗРОСЛАЯ ФУНКЦИЯ",
+                font=ctk.CTkFont(size=22, weight="bold"),
+                text_color=RED
+            ).pack(pady=(26, 8))
+
+            ctk.CTkLabel(
+                dialog,
+                text="Агрессивный режим включает грубую подачу и\nнецензурную лексику в ответах F.E.D.O.",
+                text_color=TEXT,
+                justify="center",
+                font=ctk.CTkFont(size=14)
+            ).pack(pady=8)
+
+            ctk.CTkCheckBox(
+                dialog,
+                text="Мне есть 18 лет",
+                variable=age_var,
+                fg_color=ORANGE,
+                text_color=TEXT,
+                font=ctk.CTkFont(size=15, weight="bold")
+            ).pack(anchor="w", padx=70, pady=8)
+
+            ctk.CTkCheckBox(
+                dialog,
+                text="Я принимаю полную ответственность за нецензурную\nлексику в ответах F.E.D.O.",
+                variable=resp_var,
+                fg_color=ORANGE,
+                text_color=TEXT,
+                font=ctk.CTkFont(size=13)
+            ).pack(anchor="w", padx=70, pady=8)
+
+            btns = ctk.CTkFrame(dialog, fg_color=BG)
+            btns.pack(pady=22)
+
+            def cancel():
                 try:
                     self._chat_write(
-                        "Скрытый протокол личности обнаружен. Агрессивный режим разблокирован.",
+                        "Скрытый протокол обнаружен. Подтверждение 18+ не получено — режим заблокирован.",
+                        "SYSTEM"
+                    )
+                except Exception:
+                    pass
+                dialog.destroy()
+
+            def confirm():
+                if not (age_var.get() and resp_var.get()):
+                    return
+                self.secret_aggressive_unlocked = True
+                self.settings["aggressive_unlocked"] = True
+                self.settings["personality_mode"] = "Агрессивный"
+                save_settings(self.settings)
+
+                self._rebuild_settings_page()
+
+                if hasattr(self, "personality_mode"):
+                    self.personality_mode.set("Агрессивный")
+
+                try:
+                    self._chat_write(
+                        "Скрытый протокол личности активирован. Подтверждение 18+ получено. Агрессивный режим включён.",
                         "SYSTEM"
                     )
                 except Exception:
                     pass
 
-                self.secret_aggressive_unlocked = True
+                self.show_page("Настройки")
+                dialog.destroy()
 
-            self.settings["personality_mode"] = "Агрессивный"
+            ctk.CTkButton(btns, text="Отмена", fg_color=PANEL_2, command=cancel).pack(side="left", padx=8)
+            ctk.CTkButton(
+                btns,
+                text="Подтвердить",
+                fg_color=RED,
+                hover_color="#D93F3F",
+                text_color="white",
+                command=confirm
+            ).pack(side="left", padx=8)
+        except Exception as e:
+            log(f"[ADULT CONFIRM ERROR] {e}")
+            dialog.destroy()
+            return
 
-            self._rebuild_settings_page()
-
-            if hasattr(self, "personality_mode"):
-                self.personality_mode.set("Агрессивный")
-
-            self.show_page("Настройки")
+        dialog.after(100, dialog.grab_set)
 
     def _show_dev_warning(self):
         dialog = ctk.CTkToplevel(self)
@@ -1043,7 +1293,9 @@ class FedoApp(ctk.CTk):
             "ai_provider": self.ai_provider.get(),
             "gemini_api_key": self.gemini_key.get().strip(),
             "lm_studio_url": self.lm_url.get().strip(),
-            "personality_mode": "СССР" if self.personality_mode.get() == "Агрессивный" else self.personality_mode.get(),
+            # v1.5.1: сохраняем выбранный режим как есть
+            # (раньше "Агрессивный" молча превращался в "СССР")
+            "personality_mode": self.personality_mode.get(),
             "response_language": self._lang_reverse.get(self.response_language.get(), "auto"),
             "voice_enabled": self.voice_enabled.get(),
             "tts_speaker": self.tts_speaker.get().strip(),

@@ -1,8 +1,13 @@
 APP_NAME = "F.E.D.O"
-APP_VERSION = "v1.4.6"
+APP_VERSION = "v1.5.6"
 
 ASSISTANT_NAME = "F.E.D.O"
-USER_NAME = "товарищ"
+# v1.5.4: данные задаёт САМ пользователь:
+#   имя — при первом запуске (или в чате: "меня зовут ...");
+#   пустое имя — F.E.D.O. обращается просто "товарищ"
+USER_NAME = ""
+# создатель системы — можно поменять в чате: "тебя создал ..."
+CREATOR = "Fedomirka"
 
 # AI backend
 AI_BACKEND = "hybrid"

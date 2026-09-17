@@ -18,16 +18,17 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from config import USER_NAME, CREATOR
 from core.logger import log
 
 PROFILE_FILE = Path("data/user_profile.json")
 
 DEFAULT_PROFILE = {
-    "name": "",
+    "name": USER_NAME,   # v1.5.3: имя — из config.py
     "address": "",       # форма обращения
     "city": "",
     "occupation": "",    # кем / что пользователь
-    "creator": "",       # создатель системы (F.E.D.O.)
+    "creator": CREATOR,  # v1.5.3: создатель — из config.py
     "preferences": {},   # предпочтения: {ключ: значение}
     "context": {},       # текущий контекст: {ключ: значение}
     "habits": [],        # замеченные привычки
@@ -49,6 +50,7 @@ def _now() -> str:
 
 def load_profile() -> dict:
     """Загрузить профиль (с джойном с дефолтами)."""
+    merged = None
     try:
         if PROFILE_FILE.exists():
             with open(PROFILE_FILE, "r", encoding="utf-8") as f:
@@ -57,11 +59,18 @@ def load_profile() -> dict:
                     profile = json.loads(content)
                     merged = DEFAULT_PROFILE.copy()
                     merged.update(profile)
-                    return merged
     except Exception:
         pass
 
-    return DEFAULT_PROFILE.copy()
+    if merged is None:
+        merged = DEFAULT_PROFILE.copy()
+
+    # v1.5.3: пустые имя/создатель — дособраем из config.py
+    for key in ("name", "creator"):
+        if not str(merged.get(key) or "").strip():
+            merged[key] = DEFAULT_PROFILE[key]
+
+    return merged
 
 
 def save_profile(profile: dict):

@@ -423,6 +423,22 @@ def audition(lang: str, speaker: str) -> bool:
             return False
 
 
+def preload_tts_models():
+    """
+    v1.5: предзагрузить RU+EN модели (фоновый поток после мастера
+    первой настройки) — чтобы первый ответ не ждал скачивания.
+    """
+    if not VOICE_ENABLED:
+        return
+
+    try:
+        with _tts_lock:
+            _load_model("ru")
+            _load_model("en")
+    except Exception as error:
+        print(f"[VOICE] Ошибка предзагрузки: {error}")
+
+
 def get_tts_status():
     if not VOICE_ENABLED:
         return "OFF"
