@@ -30,6 +30,8 @@ DEFAULT_SETTINGS = {
     # v4-голоса: aidar (глубокий мужской), eugene (мужской),
     # baya, kseniya, xenia (женские), random
     "tts_speaker": "aidar",
+    # v1.4.5: английский голос Silero v3_en (en_0..en_117)
+    "tts_speaker_en": "en_10",
 
     # Интерфейс
     "developer_mode": False,

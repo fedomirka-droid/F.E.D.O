@@ -3,9 +3,9 @@ F.E.D.O Core — TTS (v1.4.3)
 
 Двуязычный голос:
   - Русский: Silero v4_ru (спикер из настройки tts_speaker: aidar, eugene, ...)
-  - Английский: Silero v3_en (голос en_0, подгружается лениво
-    при первом английском ответе; у Silero английского v4/v5 нет —
-    последний английский — v3)
+  - Английский: Silero v3_en (голос из настройки tts_speaker_en,
+    подгружается лениво при первом английском ответе;
+    у Silero английского v4/v5 нет — последний английский — v3)
   - Другие письменности (например, китайский): молчим —
     F.E.D.O. умеет писать, но говорить на них пока не научился.
 
@@ -57,6 +57,17 @@ def _get_speaker():
         return speaker or None
     except Exception:
         return None
+
+
+def _get_speaker_en():
+    """
+    Голос английской модели (v3_en: en_0..en_117) — из настройки tts_speaker_en.
+    """
+    try:
+        speaker = str(load_settings().get("tts_speaker_en", "en_10") or "").strip()
+        return speaker or "en_10"
+    except Exception:
+        return "en_10"
 
 
 def _detect_lang(text: str) -> str:
@@ -179,8 +190,8 @@ def _speak_blocking(text: str):
             if speaker:
                 tts_kwargs["speaker"] = speaker
         else:
-            # английский: голос en_0 (у v3_en 118 голосов: en_0..en_117)
-            tts_kwargs["speaker"] = "en_0"
+            # английский: голос из настроек (en_0..en_117, v3_en)
+            tts_kwargs["speaker"] = _get_speaker_en()
 
         audio = model.apply_tts(**tts_kwargs)
 
@@ -206,6 +217,39 @@ def speak(text: str):
         ).start()
     except Exception as error:
         print(f"[VOICE] Ошибка запуска потока озвучки: {error}")
+
+
+SAMPLE_RU = "Принято, товарищ. F.E.D.O. к вашим услугам."
+SAMPLE_EN = "Good day, sir. F.E.D.O. at your service."
+
+
+def audition(lang: str, speaker: str) -> bool:
+    """
+    v1.4.5: проиграть фразу-пример голосом lang/speaker.
+    Для кнопки «Прослушать» в Настройках. Блокирующая функция —
+    вызывать из фонового потока.
+    """
+    if not VOICE_ENABLED or lang not in ("ru", "en") or not speaker:
+        return False
+
+    with _tts_lock:
+        model = _load_model(lang)
+
+    if model is None:
+        return False
+
+    try:
+        audio = model.apply_tts(
+            text=SAMPLE_RU if lang == "ru" else SAMPLE_EN,
+            speaker=speaker,
+            sample_rate=sample_rate,
+        )
+        sd.play(audio, sample_rate)
+        sd.wait()
+        return True
+    except Exception as error:
+        print(f"[VOICE] Ошибка прослушивания ({lang}/{speaker}): {error}")
+        return False
 
 
 def get_tts_status():
