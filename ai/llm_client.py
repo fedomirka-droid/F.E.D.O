@@ -16,9 +16,10 @@ import os
 
 import requests
 
-from config import LM_STUDIO_URL
+from config import LM_STUDIO_URL, is_gov_build
 from ai.prompts import build_system_prompt
 from core.memory import load_memory
+from core.sanitizer import sanitize
 from core.settings import load_settings
 from core.user_profile import get_profile_context
 
@@ -239,6 +240,10 @@ def ask_llm(
         result = response.json()
 
         answer = result["choices"][0]["message"]["content"]
+
+        # v1.5.10: ГОВ-сборка — фильтруем ответ перед памятью и GUI
+        if is_gov_build():
+            answer = sanitize(answer)
 
         chat_history.append({"role": "assistant", "content": answer})
         if len(chat_history) > 10:

@@ -1,5 +1,16 @@
 APP_NAME = "F.E.D.O"
-APP_VERSION = "v1.5.9"
+APP_VERSION = "v1.5.10"
+
+# v1.5.10: вариант сборки
+#   "standard" — полная версия (есть режим «Агрессивный» с гейтом 18+)
+#   "gov"      — ГОВ/коллеж-сборка: без «Агрессивного» режима,
+#                без мата в любом режиме + фильтр мата на выходе LLM
+FEDO_BUILD = "standard"
+
+
+def is_gov_build() -> bool:
+    return str(FEDO_BUILD).strip().lower() == "gov"
+
 
 ASSISTANT_NAME = "F.E.D.O"
 # v1.5.4: данные задаёт САМ пользователь:

@@ -1,4 +1,13 @@
-from config import APP_NAME, APP_VERSION
+from config import APP_NAME, APP_VERSION, is_gov_build
+
+# v1.5.10: дополнение системного prompt'а для ГОВ-сборки
+GOV_SYSTEM_RULES = """
+ПРАВИЛА ГОВ-СБОРКИ (FEDO_BUILD="gov") — ОБЯЗАТЕЛЬНО:
+- нецензурная лексика в ответах ЗАПРЕЩЕНА безусловно, ни при каких условиях;
+- оскорбительные и грубые высказывания в адрес пользователя запрещены;
+- тон: спокойный, профессиональный, по делу;
+- обращения: нейтральные (без "товарищ", "сэр" и без фамильярности).
+"""
 
 
 BASE_SYSTEM_PROMPT = f"""
@@ -85,6 +94,11 @@ def normalize_mode(mode: str) -> str:
 
 def build_personality_rules(personality_mode="СССР") -> str:
     mode = normalize_mode(personality_mode)
+
+    # v1.5.10: в ГОВ-сборке режима «Агрессивный» не существует —
+    # даже если в старых настройках он сохранён, тихо понижаем
+    if is_gov_build() and mode == "Агрессивный":
+        mode = "Современный"
 
     if mode == "СССР":
         return """
@@ -285,7 +299,7 @@ def build_language_rules(response_language="auto") -> str:
 
 
 def build_system_prompt(personality_mode="СССР", answer_mode="normal", response_language="auto") -> str:
-    return f"""
+    prompt = f"""
 {BASE_SYSTEM_PROMPT}
 
 {build_language_rules(response_language)}
@@ -294,6 +308,12 @@ def build_system_prompt(personality_mode="СССР", answer_mode="normal", respo
 
 {build_answer_rules(answer_mode)}
 """.strip()
+
+    # v1.5.10: ГОВ-сборка — жёсткие правила дописываем в конец prompt'а
+    if is_gov_build():
+        prompt += "\n\n" + GOV_SYSTEM_RULES.strip()
+
+    return prompt
 
 
 def get_system_prompt(personality_mode="СССР", answer_mode="normal") -> str:

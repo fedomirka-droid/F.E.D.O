@@ -8,7 +8,7 @@ except ImportError:
     GPUtil = None
 import customtkinter as ctk
 
-from config import APP_NAME, APP_VERSION
+from config import APP_NAME, APP_VERSION, is_gov_build
 from ai.llm_client import get_model_name, is_lm_studio_online, clear_chat_history, set_chat_history_store
 from core.chat_manager import (
     DEFAULT_FOLDER,
@@ -67,12 +67,20 @@ class FedoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title(f"{APP_NAME} {APP_VERSION}")
+        # v1.5.10: ГОВ-сборка помечена в заголовке
+        build_tag = " (ГОС)" if is_gov_build() else ""
+        self.title(f"{APP_NAME} {APP_VERSION}{build_tag}")
         self.geometry("1050x720")
         self.minsize(900, 600)
         self.configure(fg_color=BG)
 
         self.settings = load_settings()
+
+        # v1.5.10: ГОВ-сборки нет «Агрессивного» режима —
+        # если в старых настройках он сохранён, тихо сбрасываем
+        if is_gov_build() and self.settings.get("personality_mode") == "Агрессивный":
+            self.settings["personality_mode"] = "Современный"
+            save_settings(self.settings)
 
         # v1.5.8: много-чат (папки, свой файл и своя LLM-память на чат)
         self.chat_registry = ensure_registry()
@@ -334,7 +342,7 @@ class FedoApp(ctk.CTk):
 
         title = ctk.CTkLabel(
             self.header,
-            text=f"{APP_NAME} {APP_VERSION}",
+            text=f"{APP_NAME} {APP_VERSION}" + (" (ГОС)" if is_gov_build() else ""),
             font=ctk.CTkFont(size=22, weight="bold"),
             text_color=TEXT
         )
@@ -1329,7 +1337,8 @@ class FedoApp(ctk.CTk):
             "Современный"
         ]
 
-        if self.secret_aggressive_unlocked:
+        # v1.5.10: в ГОВ-сборке «Агрессивного» нет — ни при каких настройках
+        if self.secret_aggressive_unlocked and not is_gov_build():
             modes.append("Агрессивный")
 
         self._option(
