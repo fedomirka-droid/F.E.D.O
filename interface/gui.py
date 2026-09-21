@@ -1627,7 +1627,6 @@ class FedoApp(ctk.CTk):
         dialog.title("Режим разработчика")
         dialog.geometry("460x300")
         dialog.configure(fg_color=BG)
-        dialog.grab_set()
         dialog.attributes("-topmost", True)
 
         ctk.CTkLabel(
@@ -1666,6 +1665,17 @@ class FedoApp(ctk.CTk):
 
         ctk.CTkButton(btns, text="Отмена", fg_color=PANEL_2, command=cancel).pack(side="left", padx=8)
         ctk.CTkButton(btns, text="Подтвердить", fg_color=ORANGE, command=confirm).pack(side="left", padx=8)
+
+        # v1.5.9: grab — только после отрисовки окна (на Linux окно
+        # ещё не viewable в момент создания → TclError: grab failed)
+        def _safe_grab():
+            try:
+                if dialog.winfo_exists():
+                    dialog.grab_set()
+            except Exception:
+                pass
+
+        dialog.after(100, _safe_grab)
 
     def _save_settings(self):
         # v1.4: сохраняем поверх существующих настроек,

@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## F.E.D.O v1.5.9 — Linux fixes
+
+### Fixed
+- **Fixed:** диалог «Режим разработчика» падал с `TclError: grab failed:
+  window not viewable` на Linux (grab_set вызывался до отрисовки окна).
+  Теперь — как во всех остальных диалогах: после отрисовки, через after().
+
 ## F.E.D.O v1.5 — Persistent Memory & Hard Mode
 
 ### Added
