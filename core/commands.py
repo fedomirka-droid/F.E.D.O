@@ -5,14 +5,20 @@ F.E.D.O Core — Commands (v1.4)
 Личные данные (имя / город / о пользователе) теперь хранятся
 в структурированном профиле пользователя (core/user_profile.py),
 а не в плоской памяти.
+
+v1.5.11 (gov): команды знают источник вызова (source) — "local"
+(GUI/консоль, без ограничений) или "remote" (Telegram, v1.7).
+Удалённые вызовы идут через политику core/remote_policy.py:
+авторизация + белый список + подтверждение опасных действий.
 """
 from datetime import datetime
 
-from ai.llm_client import chat_history
+from ai.llm_client import clear_chat_history
 from core.logger import clear_log
 from core.memory import remember, recall, get_all_memory
 from core.user_profile import get_field, set_field, get_user_name
 from core.system_monitor import get_system_snapshot, get_system_summary
+from core.remote_policy import authorize_remote, gate_remote
 from core.pc_commands import (
     open_browser,
     open_youtube,
@@ -33,7 +39,25 @@ def with_name(text: str) -> str:
     return f"{name}, товарищ. {text}"
 
 
-def handle_command(user_text: str):
+def handle_command(user_text: str, source: str = "local", remote_user=None):
+    """
+    Обработать локальную команду.
+
+    :param user_text: текст пользователя
+    :param source: "local" (GUI/консоль) или "remote" (Telegram, v1.7)
+    :param remote_user: id удалённого пользователя (для авторизации)
+    """
+    # v1.5.11: чужим удалённым пользователям — сразу отказ, без разбора команд
+    if source == "remote" and not authorize_remote(remote_user):
+        return ("Удалённый доступ запрещён: тебя нет в списке владельцев. "
+                "Попроси владельца добавить твой id в telegram_owner_ids.")
+
+    def remote_gate(command_key: str, arg: str = ""):
+        """Проверка удалённой политики: None — выполнять, иначе вернуть текст."""
+        if source != "remote":
+            return None
+        return gate_remote(command_key, arg, remote_user)
+
     text = user_text.lower().strip().lstrip("- ").strip()
     text = text.replace("ё", "е")
     # v1.4.2: схлопываем лишние пробелы, чтобы команды не сбились
@@ -42,9 +66,15 @@ def handle_command(user_text: str):
 
     # Логи
     if text in ["очистка лога", "очисти лог", "очисти лога", "очистить лог"]:
+        denied = remote_gate("clear_log")
+        if denied:
+            return with_name(denied)
         return with_name(clear_log())
 
     if text in ["покажи лог", "открой лог", "лог"]:
+        denied = remote_gate("open_log")
+        if denied:
+            return with_name(denied)
         return with_name(open_log())
 
     # Профиль пользователя
@@ -122,18 +152,33 @@ def handle_command(user_text: str):
 
     # Умные команды ПК
     if "браузер" in text or "google" in text or "гугл" in text:
+        denied = remote_gate("open_browser")
+        if denied:
+            return with_name(denied)
         return with_name(open_browser())
 
     if "ютуб" in text or "youtube" in text:
+        denied = remote_gate("open_youtube")
+        if denied:
+            return with_name(denied)
         return with_name(open_youtube())
 
     if "музык" in text or "яндекс музыка" in text:
+        denied = remote_gate("open_music")
+        if denied:
+            return with_name(denied)
         return with_name(open_yandex_music())
 
     if "папк" in text and "проект" in text:
+        denied = remote_gate("project_folder")
+        if denied:
+            return with_name(denied)
         return with_name(open_project_folder())
 
     if "проводник" in text:
+        denied = remote_gate("open_explorer")
+        if denied:
+            return with_name(denied)
         return with_name(open_explorer())
 
     # Базовые команды
@@ -145,7 +190,7 @@ def handle_command(user_text: str):
         return with_name(f"Текущее время: {now}.")
 
     if text in ["очистить", "сброс", "/clear"]:
-        chat_history.clear()
+        clear_chat_history()
         return with_name("Контекст очищен.")
 
     if text.startswith("найди"):
@@ -154,10 +199,16 @@ def handle_command(user_text: str):
         if not query:
             return with_name("Недостаточно данных для поиска.")
 
+        denied = remote_gate("open_site", query)
+        if denied:
+            return with_name(denied)
         return with_name(open_site(query))
 
     if text.startswith("открой путь"):
         path = text.replace("открой путь", "", 1).strip()
+        denied = remote_gate("open_path", path)
+        if denied:
+            return with_name(denied)
         return with_name(open_path(path))
 
     # Память (общая)
@@ -217,6 +268,9 @@ def handle_command(user_text: str):
 
 Спросить о состоянии компьютера можно обычным вопросом:
 "Покажи состояние системы", "Почему компьютер тормозит?"
+
+Удалённо (Telegram, с v1.7): работают безопасные команды для владельца,
+опасные действия — только с подтверждением по коду.
 """
 
     return None

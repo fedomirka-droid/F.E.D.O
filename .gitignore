@@ -14,12 +14,13 @@ venv/
 env/
 
 # Logs and runtime data
+# v1.5.11: ВЕСЬ data/ — личный (чаты, истории, профиль, настройки с ключами),
+# в git не едет — иначе переписка и ключи утекут на GitHub
 logs/
 *.log
+data/
 settings.json
 memory.json
-data/memory.json
-data/user_profile.json
 
 # Environment files
 .env

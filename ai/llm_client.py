@@ -10,9 +10,19 @@ v1.4:
   - сложность запроса (simple/normal/complex) влияет на max_tokens;
   - исправлен баг v1.3: системный prompt строился с неверным аргументом,
     из-за чего каждый запрос падал с TypeError.
+
+v1.5.11 (gov): изоляция истории по сессиям + потокобезопасность.
+  Раньше был один глобальный список chat_history и один путь _HISTORY_FILE:
+  при параллельных запросах (Telegram, v1.7) контексты разных пользователей
+  смешивались бы. Теперь у каждой сессии (чат GUI / пользователь бота) своя
+  история и свой файл, запись — под замком threading.RLock. Замок держится
+  только на чтении/записи истории, медленный HTTP-запрос к LM Studio идёт
+  БЕЗ замка — сессии не ждут друг друга.
 """
 import json
 import os
+import re
+import threading
 
 import requests
 
@@ -24,63 +34,111 @@ from core.settings import load_settings
 from core.user_profile import get_profile_context
 
 
-chat_history = []
+# v1.5.11: потокобезопасное хранилище историй по сессиям.
+#   GUI: сессия = id чата (переключается через set_chat_history_store);
+#   Telegram (v1.7): сессия = telegram user id (передаётся в ask_llm напрямую).
+_HISTORY_DIR = os.path.join("data", "chat_history")
+_HISTORY_WINDOW = 10
+_LEGACY_HISTORY_FILE = os.path.join("data", "chat_history.json")  # до v1.5.8
 
-# v1.5.3: память между запусками — последние 10 сообщений живут на диске
-# (как на серверах: история не теряется при рестарте)
-# v1.5.8: память У КАЖДОГО ЧАТА своя: data/chat_history/<chat_id>.json
-_HISTORY_FILE = os.path.join("data", "chat_history.json")  # legacy (до v1.5.8)
-
-
-def set_chat_history_store(chat_id: str):
-    """
-    v1.5.8: переключить хранилище LLM-памяти на чат chat_id
-    (вызывается GUI при старте и при переключении чатов).
-    """
-    global _HISTORY_FILE
-    target = os.path.join("data", "chat_history", str(chat_id or "main") + ".json")
-    if target == _HISTORY_FILE:
-        return
-
-    _HISTORY_FILE = target
-    _load_chat_history()
+_history_lock = threading.RLock()
+_sessions = {}
+_current_session = "main"
 
 
-def _load_chat_history():
-    """v1.5.3: загрузить сохранённую историю (вызывается при старте)."""
-    global chat_history
-    chat_history = []
+def _safe_session_id(session_id) -> str:
+    """Почистить id сессии, чтобы он был безопасным именем файла."""
+    sid = re.sub(r"[^A-Za-z0-9_\-А-Яа-яЁё]", "_", str(session_id or "main"))
+    sid = sid.strip("_") or "main"
+    return sid[:64]
+
+
+def _session_file(session_id: str) -> str:
+    return os.path.join(_HISTORY_DIR, _safe_session_id(session_id) + ".json")
+
+
+def _load_session_file(session_id: str) -> list:
+    """Прочитать историю сессии с диска (пустой список, если файла нет)."""
+    path = _session_file(session_id)
     try:
-        if os.path.exists(_HISTORY_FILE):
-            with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
                     if isinstance(data, list):
-                        chat_history = data[-10:]
+                        return data[-_HISTORY_WINDOW:]
     except Exception:
         pass
+    # Миграция древнего формата (до v1.5.8) для главной сессии
+    if _safe_session_id(session_id) == "main":
+        try:
+            if os.path.exists(_LEGACY_HISTORY_FILE):
+                with open(_LEGACY_HISTORY_FILE, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        if isinstance(data, list):
+                            return data[-_HISTORY_WINDOW:]
+        except Exception:
+            pass
+    return []
 
 
-def _save_chat_history():
-    """v1.5.3: сохранить историю на диск."""
+def _save_session_file(session_id: str, history: list):
+    """Сохранить историю сессии на диск (атомарно: tmp-файл + replace)."""
     try:
-        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
-        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(chat_history[-10:], f, ensure_ascii=False, indent=2)
+        os.makedirs(_HISTORY_DIR, exist_ok=True)
+        path = _session_file(session_id)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(history[-_HISTORY_WINDOW:], f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
     except Exception:
         pass
 
 
-def clear_chat_history():
-    global chat_history
-    chat_history = []
-    # v1.5.3: чистим и файл, чтобы память не "возрождалась"
-    try:
-        if os.path.exists(_HISTORY_FILE):
-            os.remove(_HISTORY_FILE)
-    except Exception:
-        pass
+def _get_session(session_id) -> list:
+    """Взять (или подгрузить с диска) историю сессии. Вызывать ПОД ЗАМКОМ."""
+    sid = _safe_session_id(session_id or _current_session)
+    hist = _sessions.get(sid)
+    if hist is None:
+        hist = _load_session_file(sid)
+        _sessions[sid] = hist
+    return hist
+
+
+def set_chat_history_store(chat_id: str):
+    """
+    Переключить текущую сессию LLM-памяти (вызывается GUI при старте
+    и при переключении чатов). Сигнатура сохранена для совместимости.
+    """
+    global _current_session
+    sid = _safe_session_id(chat_id)
+    with _history_lock:
+        _current_session = sid
+        _get_session(sid)
+
+
+def get_current_session() -> str:
+    """Id текущей сессии (для GUI и отладки)."""
+    return _current_session
+
+
+def clear_chat_history(session_id=None):
+    """
+    Очистить историю сессии (по умолчанию — текущей) в памяти и на диске,
+    чтобы память не «возрождалась» после рестарта.
+    """
+    sid = _safe_session_id(session_id or _current_session)
+    with _history_lock:
+        _sessions[sid] = []
+        try:
+            path = _session_file(sid)
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
 
 def get_current_lm_url() -> str:
@@ -170,6 +228,7 @@ def ask_llm(
     user_text: str,
     extra_context: str | None = None,
     complexity: str | None = None,
+    session_id=None,
 ) -> str:
     """
     Отправить запрос локальной LLM и вернуть ответ.
@@ -177,8 +236,11 @@ def ask_llm(
     :param user_text: текст запроса пользователя
     :param extra_context: дополнительный контекст (снимок системы и т.п.)
     :param complexity: сложность запроса — simple / normal / complex
+    :param session_id: id сессии истории (чат GUI / telegram user id).
+        Если не задан — используется текущая сессия
+        (см. set_chat_history_store).
     """
-    global chat_history
+    sid = _safe_session_id(session_id or _current_session)
 
     settings = load_settings()
 
@@ -210,9 +272,11 @@ def ask_llm(
     if context_parts:
         messages.append({"role": "system", "content": "\n\n".join(context_parts)})
 
-    chat_history.append({"role": "user", "content": user_text})
-    _save_chat_history()
-    messages += chat_history[-10:]
+    with _history_lock:
+        session_hist = _get_session(sid)
+        session_hist.append({"role": "user", "content": user_text})
+        _save_session_file(sid, session_hist)
+        messages += session_hist[-_HISTORY_WINDOW:]
 
     model_name = get_model_name()
 
@@ -245,10 +309,11 @@ def ask_llm(
         if is_gov_build():
             answer = sanitize(answer)
 
-        chat_history.append({"role": "assistant", "content": answer})
-        if len(chat_history) > 10:
-            chat_history = chat_history[-10:]
-        _save_chat_history()
+        with _history_lock:
+            session_hist = _get_session(sid)
+            session_hist.append({"role": "assistant", "content": answer})
+            del session_hist[:-_HISTORY_WINDOW]
+            _save_session_file(sid, session_hist)
 
         return answer
 
@@ -258,5 +323,5 @@ def ask_llm(
         return f"Ошибка подключения к LM Studio: {e}"
 
 
-# v1.5.3: подхватываем историю при импорте модуля (один раз при старте)
-_load_chat_history()
+# v1.5.11: история подгружается лениво, по сессиям (_get_session), —
+# при импорте модуля ничего с диска не читаем.

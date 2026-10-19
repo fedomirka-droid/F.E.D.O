@@ -8,7 +8,14 @@ DEFAULT_SETTINGS = {
     # AI
     "ai_provider": "Hybrid (Auto)",
     "lm_studio_url": "http://127.0.0.1:1234/v1/chat/completions",
+    # v1.5.11: ключ в JSON — legacy. Правильное место — переменная
+    # окружения FEDO_GEMINI_API_KEY (см. core/secrets.py): она важнее.
     "gemini_api_key": "",
+
+    # v1.5.11: владельцы Telegram-бота (v1.7) — список id (числа/строки).
+    # Пустой список = удалёнка запрещена всем. Запасной путь —
+    # FEDO_TELEGRAM_OWNER_IDS (через запятую).
+    "telegram_owner_ids": [],
 
     # Личность
     "personality_mode": "СССР",
@@ -46,20 +53,26 @@ def load_settings():
 
         if not os.path.exists(SETTINGS_FILE):
             save_settings(DEFAULT_SETTINGS)
-            return DEFAULT_SETTINGS.copy()
-
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
-            saved = json.load(file)
+            saved = {}
+        else:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
+                saved = json.load(file)
 
         if not isinstance(saved, dict):
-            return DEFAULT_SETTINGS.copy()
+            saved = {}
 
         result = DEFAULT_SETTINGS.copy()
         result.update(saved)
-        return result
-
     except Exception:
-        return DEFAULT_SETTINGS.copy()
+        result = DEFAULT_SETTINGS.copy()
+
+    # v1.5.11: секрет из окружения важнее JSON (см. core/secrets.py).
+    # os.environ читаем напрямую, чтобы не делать круговой импорт.
+    env_key = os.environ.get("FEDO_GEMINI_API_KEY", "").strip()
+    if env_key:
+        result["gemini_api_key"] = env_key
+
+    return result
 
 
 def save_settings(settings: dict):
