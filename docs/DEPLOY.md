@@ -3,6 +3,21 @@
 > Всё ниже — **инструкции**. Агент не менял VPS, firewall, SSH, VPN и не
 > трогал другие проекты (например GGSELL). Перед применением — подтверждение владельца.
 
+Связанные документы: [`.env.example`](../.env.example) (шаблон без секретов),
+[`ECOSYSTEM_STATUS.md`](ECOSYSTEM_STATUS.md) (что проверено, а что нет),
+[`DESKTOP_BUILD.md`](DESKTOP_BUILD.md) (ThinkPad на Windows 11),
+[`MINI_INTEGRATION.md`](MINI_INTEGRATION.md) (Telegram-бот).
+
+## Что где живёт
+
+| Роль | Машина | Что запущено | Порт |
+|------|--------|--------------|------|
+| HUB | VPS Ubuntu 24.04 | `fedo-hub` (API+sync) и `fedo-mini` (Telegram) | `127.0.0.1:8765`, наружу через nginx+TLS |
+| Desktop | ThinkPad, Windows 11 | `fedo-desktop` + WebView-окно | `127.0.0.1:8765` |
+| GPU-агент | домашний ПК, RTX 3080 | `python -m ecosystem.agent` + LM Studio | исходящие к HUB |
+
+HUB никогда не слушает публичный интерфейс: только loopback + nginx.
+
 ## Вариант A: Docker Compose (рекомендуется)
 
 Изоляция: своя сеть `fedo_net`, свои тома `fedo_data`/`fedo_mini_data`,
@@ -85,12 +100,68 @@ sudo systemctl restart fedo-hub fedo-mini    # или docker compose up -d --bui
 Миграции Alembic перед применением **автоматически делают копию SQLite**
 в `backups/`.
 
-## Резервные копии
+## Проверка после установки (health checks)
 
 ```bash
+# 1. процесс и версия
+curl -s http://127.0.0.1:8765/api/health | jq '{status,version,role,core}'
+# 2. миграции применены
+sqlite3 /var/lib/fedo/fedo.db "select version_num from alembic_version;"
+# 3. владелец существует (не должно быть пусто)
+sqlite3 /var/lib/fedo/fedo.db "select username, created_at from owners;"
+# 4. наружу по HTTPS (после nginx)
+curl -s https://fedo.example.com/api/health | jq .status
+# 5. бот отвечает только своим сервисным токеном
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/api/bot/today   # 401 без X-Bot-Token
+```
+
+Проверка из Desktop: Настройки → «Роль backend», «Версия экосистемы», «Ядро Core»
+должны показать значения, а «Синхронизация» — `online: true`.
+
+## Резервные копии
+
+Три независимых уровня:
+
+```bash
+# 1. копия из UI: Настройки → «Создать копию сейчас» (SQLite backup API)
+# 2. скрипт на сервере
 sudo /opt/fedo/app/scripts/backup-hub.sh /opt/fedo/data /var/backups/fedo
 # cron: 0 4 * * * /opt/fedo/app/scripts/backup-hub.sh
+# 3. перед каждой миграцией Alembic копирует базу сам в data/backups/
 ```
+
+Восстановление (останавливает сервис, сохраняет текущую базу, проверяет
+`integrity_check`, при неудаче откатывается сам):
+
+```bash
+sudo -u fedo /opt/fedo/app/scripts/ubuntu/restore-hub.sh \
+     /var/lib/fedo/backups/fedo-20261029-041500.db
+```
+
+Откат релиза (предыдущий каталог `releases/<ts>`):
+
+```bash
+sudo /opt/fedo/app/scripts/ubuntu/rollback.sh
+```
+
+## Windows 11: ноутбук
+
+```powershell
+# 1. Python 3.11+ и Node.js 20+ уже установлены
+cd C:\FEDO\app
+py -3 -m venv .venv
+.venv\Scripts\pip install -r requirements-ecosystem.txt
+cd desktop; npm ci; npm run build; cd ..
+
+# 2. первый запуск (создаст %APPDATA%\FEDO\fedo.db)
+.venv\Scripts\python -m ecosystem.backend --role desktop
+
+# 3. автозапуск при входе в систему
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-autostart.ps1
+```
+
+Проверка: <http://127.0.0.1:8765/api/health> → `role: desktop`, `core: v1.5.10`.
+Остановить автозапуск: `powershell -ExecutionPolicy Bypass -File scripts\windows\install-autostart.ps1 -Uninstall`.
 
 ## Ограничения маленького VPS
 

@@ -1,85 +1,81 @@
-# F.E.D.O. Ecosystem — состояние реализации
+# F.E.D.O. Ecosystem — состояние (снимок)
 
-Дата среза: 2026-10-29. Ветка: `arena/3a9f3ab5-f-e-d-o`.
-Основание: репозиторий содержит только **F.E.D.O. Core v1.5.10** — архива
-`F.E.D.O-Student-Edition-MVP(1).zip` (FastAPI/React/SQLite MVP) в рабочем
-окружении не оказалось, поэтому слой Ecosystem написан с нуля **поверх Core**
-и переиспользует его модули (монитор, prompt-ы, команды, конфиг).
+Дата: **2026-10-29**. Ветка: `arena/3a9f3ab5-f-e-d-o`. Роль документа: честный
+ответ на вопрос «что работает сейчас, что проверено и чем именно, а что нет».
 
-## Готово и проверено
+**Статус: Pilot-ready, не Production.** Один владелец, несколько устройств,
+локальный backend + HUB + агент + Telegram-бот + AI Router.
 
-| Блок | Состояние | Чем проверено |
-|------|-----------|----------------|
-| Аудит и стабилизация Core | Core не изменён, работает | `tests/test_migrations_core.py`, `git diff` по `core/`, `ai/`, `interface/` |
-| Backend (HUB + Desktop) | FastAPI, 60+ эндпоинтов | `pytest tests/test_auth.py tests/test_tasks_calendar.py` |
-| Миграции БД | Alembic + автобэкап SQLite | `tests/test_migrations_core.py` |
-| AI Router 2.0 | 4 режима, приватность, лимиты, отмена, стриминг | `tests/test_ai_router.py` (18 тестов) |
-| Sync Engine | outbox, идемпотентность, конфликты, backoff, перезапуск | `tests/test_sync.py` (14 тестов) + живой прогон HUB↔Desktop |
-| Импорт ИС-21 | XLSX/XLS, merge, соседние группы, даты, предупреждения | `tests/test_schedule_import.py` (17 тестов) |
-| Device Manager + Agent | белый список команд, подпись канала, аудит, симуляция | `tests/test_devices_agent.py`, `tests/test_gateway.py` |
-| Telegram Mini | привязка по коду, права, задачи/расписание/устройства | `tests/test_telegram.py`, `tests/test_mini_bot.py` |
-| Desktop UI | 8 разделов, тёмная/светлая тема, масштаб, стриминг чата | `npm run build`, ручная проверка через live-preview |
-| Desktop shell (Tauri 2) | конфигурация, sidecar, health-check, kill при выходе | **не собрано**: в песочнице нет Rust toolchain |
-| Deployment | Docker Compose (isolated), systemd, nginx, бэкапы | YAML провалидирован; реальный VPS не менялся |
+## Что где и в каком состоянии
 
-## Требует реального оборудования/доступов
+| Компонент | Состояние | Чем подтверждено |
+|-----------|-----------|------------------|
+| F.E.D.O. Core (v1.5.10) | работает, **не изменён** | `main.py --console`: время, монитор CPU/RAM/диск, корректный выход; `git diff` по `core/ ai/ interface/ voice/ config.py main.py` — 0 файлов |
+| Backend Ecosystem 2.0.0-personal | работает | `/api/health` → `status: ok`, `core: v1.5.10` |
+| Desktop UI (React+TS) | собирается, отдаётся backend'ом | `npm run build` (226.90 kB JS / gzip 68.86), `GET /` → 200, SPA-fallback `/tasks` → 200 |
+| Tauri-обёртка | конфиг готов, **инсталлятор не собран** | нет Rust toolchain в песочнице — `.msi/.exe` не существует |
+| Синхронизация Desktop ↔ HUB | работает | два живых процесса (8795/8796): push/pull, конфликт, разрешение, offline-восстановление |
+| Агент устройств | работает в режиме симуляции | lock/launch/shutdown/wol → `done`, запрещённые → `failed` с причиной |
+| Telegram Mini (aiogram) | работает через HubClient | `/link`, `/today`, `/tasks`, `/devices`, действия по задачам, `ask_ai` |
+| AI Router | работает с локальной заглушкой LM Studio | `/api/ai/health` видит `stub-llama-3.1-8b`, cloud без ключа корректно падает на local |
+| Student Edition | **интеграция заблокирована** | исходников нет; статус `blocked`, импорт → 409. Слой совместимости готов |
+| VPS-развёртывание | **не выполнялось** | скрипты и документация готовы, требуется подтверждение владельца |
 
-1. **Windows-сборка Tauri**: `rustup` + MSVC Build Tools, затем
-   `.\desktop\scripts\build-sidecar.ps1` и `npm run tauri build`.
-2. **LM Studio**: локальные модели — `FEDO_LOCAL_AI_URL`, интерфейс покажет статус.
-3. **Gemini/облако**: API-ключ вводится в Настройках (шифруется), реальные
-   запросы не выполнялись — только мок-транспорт в тестах.
-4. **Telegram**: токен @BotFather + `FEDO_BOT_SERVICE_TOKEN` на HUB.
-5. **VPS**: развёртывание по `docs/DEPLOY.md` требует подтверждения владельца.
-6. **GPU-ПК (RTX 3080)**: запуск `python -m ecosystem.agent ... --gateway-port 8790`,
-   LM Studio локально; проверено в режиме симуляции + реальный heartbeat.
-7. **Wake-on-LAN**: нужен реальный контроллер (старый ноутбук) в той же сети.
-8. **Существующий F.E.D.O. Mini 2.1**: подключить адаптер `HubClient`
-   к имеющейся бизнес-логике (контракты зафиксированы).
+## Тесты
 
-## Что осталось сделать (честно)
+```
+.venv/bin/python -m pytest        → 149 passed  (~33 s)
+cd desktop && npx vitest run      → 11 passed
+cd desktop && npx tsc --noEmit    → 0 ошибок
+cd desktop && npm run build       → ok
+```
 
-* Windows-установщик: конфигурация готова, сборка не выполнялась (нет Rust).
-* Сквозной тест «два Desktop ↔ один HUB по сети» — логика покрыта тестами на
-  HTTP-уровне, но реальные две машины не поднимались.
-* Планировщик напоминаний в Desktop (in-process) не реализован: напоминания
-  отдаются через API (`/api/tasks/reminders/due`, `/api/bot/reminders`).
-* Миграция данных из старой версии Mini (если у неё своя БД) — не выполнялась,
-  исходников Mini нет.
-* Импорт `.xls` проверен кодом и юнит-тестами xlrd-ветки, но реального
-  «колледжного» .xls-файла в окружении не было — проверено на синтетике.
+| Файл | Тестов |
+|------|--------|
+| `test_ecosystem_integration.py` | 29 |
+| `test_schedule_import.py` | 20 |
+| `test_sync.py` | 20 |
+| `test_ai_router.py` | 16 |
+| `test_devices_agent.py` | 16 |
+| `test_migrations_core.py` | 10 |
+| `test_mini_bot.py` | 9 |
+| `test_auth.py` | 8 |
+| `test_gateway.py` | 8 |
+| `test_telegram.py` | 8 |
+| `test_tasks_calendar.py` | 5 |
+| **Итого** | **149** |
 
-## Как продолжить
+Базовая точка (коммит `236d324`): **110 passed**. Арифметика роста:
+`+29` (новый файл интеграции) `+3` (тесты расписания) `+7` (тесты синхронизации) = **149**.
 
-1. Собрать sidecar и установщик на Windows (`docs/DESKTOP_BUILD.md`).
-2. Развернуть HUB (`docs/DEPLOY.md`), задать секреты, создать владельца.
-3. Зарегистрировать устройства, ввести их токены в агенты.
-4. Указать на ноутбуке `FEDO_HUB_URL` + `FEDO_SYNC_DEVICE_TOKEN`.
-5. Подключить Mini 2.1 к `HubClient` и запустить бота.
-6. Прогнать `pytest -q` на целевой машине и сценарии из README.
+## Что требует внешних ресурсов
 
-## Живая проверка синхронизации двух узлов (2026-10-29)
+1. **Rust + MSVC** → сборка `.msi`/`.exe` Tauri. Без них установщика нет.
+2. **LM Studio на RTX 3080** → реальные генерации (сейчас проверено на заглушке,
+   повторяющей OpenAI-контракт).
+3. **Ключ Gemini / OpenAI-совместимого облака** → облачные ответы. Без ключа
+   Router честно переключается на локальную модель.
+4. **Токен @BotFather** → живой Telegram. Логика бота проверена тестами и HubClient.
+5. **VPS Ubuntu 24.04** → реальный деплой. Ничего не менялось без разрешения.
+6. **Домашний ПК + WoL-контроллер** → настоящий запуск/сон/пробуждение.
+7. **Исходники Student Edition** → полная интеграция (см. `STUDENT_EDITION_GAP.md`).
 
-Подняты два отдельных процесса backend: HUB (`--role hub`, порт 8781) и
-Desktop (`--role desktop`, порт 8782, `FEDO_HUB_URL` + токен устройства).
-Данные — разные каталоги, общение только по HTTP.
+## Известные ограничения
 
-| Шаг | Результат |
-|-----|-----------|
-| Desktop создаёт задачу → `POST /api/sync/run` | `pushed: 1, applied: 1`; на HUB задача появилась |
-| HUB создаёт задачу → sync | `pulled: 1`; на Desktop появилась |
-| Обе стороны правят одну задачу | `conflicts: 1`; сохранены обе версии (`Правка на HUB` / `Правка на ноутбуке`) |
-| Разрешение конфликта «моя версия» | правка уехала на HUB (`sync: pushed 1`), HUB показывает локальный текст |
-| Третье устройство (`HomePC`) читает журнал | видит **обе** версии конфликта и итоговую — данные не потеряны |
-| Без токена / с неверным токеном | `401` на `/api/tasks` и `/api/sync/pull` |
+* Core GUI (CustomTkinter) в песочнице не запускается: нет `tkinter`/дисплея.
+  Консольный путь Core проверен; GUI-файлы не изменялись.
+* Белый список приложений хранится на HUB (`command_allowlist`) и отдельно в
+  аргументах агента (`--allow-app`); CLI-флаг не пишет список на сервер — это
+  осознанно (агент не может расширять себе права).
+* SQLite + WAL рассчитан на одного владельца и единицы устройств.
+* Напоминания о парах работают через WebView/браузерные `Notification`;
+  в чистом Tauri-окне поведение зависит от WebView2.
+* Классы конфликтов: «моя версия» и «серверная» — выбор владельца; автослияния полей нет.
 
-Найденный и исправленный баг: при разрешении конфликта «моя версия» на
-клиенте правка применялась только локально, в outbox ничего не попадало, и
-HUB оставался со своей версией. Теперь `resolve_conflict`:
-1) применяет входящую версию относительно **локальной** версии записи,
-2) ставит/обновляет операцию в outbox с `base_version` = версии HUB.
-Регрессия закреплена тестами
-`test_client_resolves_conflict_locally_and_pushes_it_to_hub` и
-`test_hub_conflict_resolution_does_not_enqueue_outbox`.
+## Документы
 
-Полный прогон: `110 passed` (`pytest -q`, 22.8 s).
+* [`REPORT_ECOSYSTEM.md`](REPORT_ECOSYSTEM.md) — отчёт A–L с командами и результатами.
+* [`DEPLOY.md`](DEPLOY.md) — HUB на Ubuntu 24.04, Desktop на Windows 11, бэкапы, откат.
+* [`STUDENT_EDITION_GAP.md`](STUDENT_EDITION_GAP.md) — чего не хватает для Student Edition.
+* [`MINI_INTEGRATION.md`](MINI_INTEGRATION.md) — контракт бота и HUB.
+* [`DESKTOP_BUILD.md`](DESKTOP_BUILD.md) — сборка Desktop.
