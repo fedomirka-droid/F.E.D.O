@@ -132,8 +132,12 @@ export function Tasks() {
                   {task.status !== "done" ? (
                     <button className="btn small primary" disabled={busy} onClick={() => act(task, "complete")}>✓</button>
                   ) : null}
-                  <button className="btn small" disabled={busy} onClick={() => act(task, "extend", 15)}>+15</button>
-                  <button className="btn small" disabled={busy} onClick={() => act(task, "time", 15)}>⏱</button>
+                  <button className="btn small" disabled={busy} title="Продлить план на 15 минут"
+                          onClick={() => act(task, "extend", 15)}>+15 план</button>
+                  <button className="btn small" disabled={busy} title="Отложить срок и напоминание на 15 минут"
+                          onClick={() => act(task, "snooze", 15)}>⏰ +15 мин</button>
+                  <button className="btn small" disabled={busy} title="Записать 15 минут факта"
+                          onClick={() => act(task, "time", 15)}>⏱ факт</button>
                   <button className="btn small" disabled={busy} onClick={() => act(task, "skip")}>⏭</button>
                   <button className="btn small ghost" onClick={() => startEdit(task)}>✎</button>
                   <button className="btn small danger" disabled={busy} onClick={() => remove(task)}>✕</button>

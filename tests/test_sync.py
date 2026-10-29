@@ -324,3 +324,262 @@ def test_hub_conflict_resolution_does_not_enqueue_outbox(hub):
                            headers=hub.headers, json={"resolution": "local"})
     assert resp.status_code == 200
     assert hub.client.get("/api/sync/outbox", headers=hub.headers).json()["outbox"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Два устройства правят одну задачу + восстановление после отключения HUB
+# --------------------------------------------------------------------------- #
+def test_two_devices_edit_same_task_and_keep_my_version(hub):
+    """Одновременная правка на ThinkPad и HomePC: обе версии сохранены."""
+    dev_a = _device(hub, "ThinkPad")
+    dev_b = _device(hub, "HomePC")
+    task_id = "88888888-8888-8888-8888-888888888888"
+
+    hub.client.post("/api/sync/push", headers={"X-Device-Token": dev_a["token"]},
+                    json={"operations": [_op("op-two-a1", task_id, "Исходная")]})
+
+    # оба устройства правят от версии 1
+    a = hub.client.post("/api/sync/push", headers={"X-Device-Token": dev_a["token"]},
+                        json={"operations": [_op("op-two-a2", task_id,
+                                                 "Правка с ThinkPad", base_version=1)]})
+    assert a.json()["results"][0]["status"] == "applied"
+    assert a.json()["results"][0]["version"] == 2
+
+    b = hub.client.post("/api/sync/push", headers={"X-Device-Token": dev_b["token"]},
+                        json={"operations": [_op("op-two-b2", task_id,
+                                                 "Правка с HomePC", base_version=1)]})
+    result = b.json()["results"][0]
+    assert result["status"] == "conflict"
+    assert result["server"]["title"] == "Правка с ThinkPad"
+
+    # данные не потеряны: серверная версия на месте, входящая — в конфликте
+    conflicts = hub.client.get("/api/sync/conflicts", headers=hub.headers).json()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["incoming"]["title"] == "Правка с HomePC"
+    assert conflicts[0]["server"]["title"] == "Правка с ThinkPad"
+
+    # владелец выбирает «моя версия» (версия HomePC)
+    resolved = hub.client.post(f"/api/sync/conflicts/{conflicts[0]['id']}/resolve",
+                               headers=hub.headers, json={"resolution": "local"})
+    assert resolved.status_code == 200 and resolved.json()["ok"] is True
+    task = hub.client.get(f"/api/tasks/{task_id}", headers=hub.headers).json()
+    assert task["title"] == "Правка с HomePC"
+    # версия 1 -> 2 (ThinkPad) -> 3 (разрешение конфликта в пользу HomePC)
+    assert task["version"] == 3
+
+    # второе устройство получает итог при следующем pull
+    pull = hub.client.get("/api/sync/pull", headers={"X-Device-Token": dev_a["token"]},
+                          params={"cursor": 0}).json()
+    titles = [c["payload"].get("title") for c in pull["changes"] if c["entity"] == "task"]
+    assert "Правка с HomePC" in titles
+    assert "Правка с ThinkPad" in titles  # история изменений сохранена
+
+
+def test_keep_server_version_discards_local_but_keeps_it_in_conflict(harness):
+    task = harness.client.post("/api/tasks", headers=harness.headers,
+                               json={"title": "Локально"}).json()
+    harness.settings.hub_url = "https://hub.example.invalid"
+    harness.settings.sync_device_token = "dev_fake_token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/sync/push":
+            op = json.loads(request.content)["operations"][0]
+            return httpx.Response(200, json={"results": [{
+                "status": "conflict", "op_id": op["op_id"], "entity_id": op["entity_id"],
+                "conflict_id": "conf-server-1", "server_version": 3, "base_version": 1,
+                "server": {"title": "Серверная", "version": 3}}]})
+        if request.url.path == "/api/sync/pull":
+            return httpx.Response(200, json={"cursor": 0, "changes": []})
+        raise AssertionError(request.url.path)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5)
+    with harness.db.session() as db:
+        sync_worker.run_sync(db, harness.settings, harness.owner_id, client=client)
+
+    conflicts = harness.client.get("/api/sync/conflicts", headers=harness.headers).json()["conflicts"]
+    assert len(conflicts) == 1
+    payload = conflicts[0]["incoming"]
+    assert payload["title"] == "Локально", "локальная версия должна сохраниться в конфликте"
+
+    resolved = harness.client.post(f"/api/sync/conflicts/{conflicts[0]['id']}/resolve",
+                                   headers=harness.headers, json={"resolution": "server"})
+    assert resolved.json()["ok"] is True
+    assert harness.client.get("/api/sync/outbox",
+                              headers=harness.headers).json()["outbox"] == []
+    # локальная правка не потеряна: осталась в записи конфликта
+    history = harness.client.get("/api/sync/conflicts?include_resolved=true",
+                                 headers=harness.headers).json()["conflicts"]
+    assert history[0]["incoming"]["title"] == "Локально"
+    assert history[0]["status"] == "resolved"
+
+
+def test_recovery_after_hub_outage_backs_off_then_succeeds(harness):
+    """HUB недоступен → очередь растёт и backoff; HUB вернулся → всё уехало."""
+    for index in range(3):
+        harness.client.post("/api/tasks", headers=harness.headers,
+                            json={"title": f"Офлайн-{index}"})
+    harness.settings.hub_url = "https://hub.example.invalid"
+    harness.settings.sync_device_token = "dev_fake_token"
+    state = {"down": True}
+    pushed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/sync/push":
+            if state["down"]:
+                raise httpx.ConnectError("hub unreachable", request=request)
+            body = json.loads(request.content)
+            results = []
+            for op in body["operations"]:
+                pushed.append(op["entity_id"])
+                results.append({"status": "applied", "op_id": op["op_id"],
+                                "entity_id": op["entity_id"], "version": 1,
+                                "updated_at": "2026-10-29T15:00:00Z"})
+            return httpx.Response(200, json={"results": results})
+        if request.url.path == "/api/sync/pull":
+            return httpx.Response(200, json={"cursor": 3, "changes": []})
+        raise AssertionError(request.url.path)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5)
+    with harness.db.session() as db:
+        failed = sync_worker.run_sync(db, harness.settings, harness.owner_id, client=client)
+    assert failed["ok"] is False
+    status = harness.client.get("/api/sync/status", headers=harness.headers).json()
+    assert status["pending_operations"] == 3 and status["online"] is False
+
+    outbox = harness.client.get("/api/sync/outbox", headers=harness.headers).json()["outbox"]
+    assert all(row["attempts"] >= 1 for row in outbox)
+    assert all(row["next_attempt_at"] for row in outbox)
+
+    # HUB вернулся: ждать backoff не нужно — «повторная попытка» доступна сразу
+    state["down"] = False
+    with harness.db.session() as db:
+        from ecosystem.backend.models import OutboxEntry
+        from sqlalchemy import select as sa_select
+
+        for row in db.execute(sa_select(OutboxEntry)
+                              .where(OutboxEntry.owner_id == harness.owner_id)).scalars():
+            row.next_attempt_at = sync_engine.utcnow()
+        db.flush()
+    with harness.db.session() as db:
+        recovered = sync_worker.run_sync(db, harness.settings, harness.owner_id, client=client)
+    assert recovered["ok"] is True
+    assert recovered["pushed"] == 3 and recovered["applied"] == 3
+    assert len(pushed) == 3
+    assert harness.client.get("/api/sync/outbox",
+                              headers=harness.headers).json()["outbox"] == []
+    status = harness.client.get("/api/sync/status", headers=harness.headers).json()
+    assert status["pending_operations"] == 0 and status["online"] is True
+    assert status["cursor"] == 3
+
+
+def test_queue_survives_restart_mid_flight(harness):
+    """Изменение, не уехавшее до перезапуска, остаётся в очереди и уходит после."""
+    harness.client.post("/api/tasks", headers=harness.headers, json={"title": "До перезапуска"})
+    harness.settings.hub_url = "https://hub.example.invalid"
+    harness.settings.sync_device_token = "dev_fake_token"
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    with harness.db.session() as db:
+        sync_worker.run_sync(db, harness.settings, harness.owner_id,
+                             client=httpx.Client(transport=httpx.MockTransport(down), timeout=5))
+
+    harness.make_app()   # имитация перезапуска приложения
+    harness.token = harness.client.post("/api/auth/login", json={
+        "username": "owner", "password": "Sup3rSecret!"}).json()["token"]
+    outbox = harness.client.get("/api/sync/outbox", headers=harness.headers).json()["outbox"]
+    assert len(outbox) == 1
+
+    # backoff уже назначен: «ждём» его истечения, не теряя операцию
+    with harness.db.session() as db:
+        from ecosystem.backend.models import OutboxEntry
+        from sqlalchemy import select as sa_select
+
+        for row in db.execute(sa_select(OutboxEntry)
+                              .where(OutboxEntry.owner_id == harness.owner_id)).scalars():
+            row.next_attempt_at = sync_engine.utcnow()
+        db.flush()
+
+    def up(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/sync/push":
+            op = json.loads(request.content)["operations"][0]
+            return httpx.Response(200, json={"results": [{
+                "status": "applied", "op_id": op["op_id"], "entity_id": op["entity_id"],
+                "version": 1, "updated_at": "2026-10-29T16:00:00Z"}]})
+        return httpx.Response(200, json={"cursor": 1, "changes": []})
+
+    with harness.db.session() as db:
+        result = sync_worker.run_sync(db, harness.settings, harness.owner_id,
+                                      client=httpx.Client(transport=httpx.MockTransport(up),
+                                                          timeout=5))
+    assert result["ok"] is True and result["applied"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Сущности с уникальностью на владельца (профиль студента, настройки)
+# --------------------------------------------------------------------------- #
+def test_profile_with_foreign_id_is_merged_not_duplicated(hub):
+    """Узлы выводят id профиля из своего owner_id — синхронизация не должна падать."""
+    hub.client.get("/api/student/profile", headers=hub.headers)   # профиль уже есть
+    foreign_profile_id = "99999999-9999-5999-8999-999999999999"
+    dev = _device(hub)
+
+    push = hub.client.post("/api/sync/push", headers={"X-Device-Token": dev["token"]},
+                           json={"operations": [{
+                               "op_id": "op-profile-1", "entity": "student_profile",
+                               "entity_id": foreign_profile_id, "operation": "upsert",
+                               "base_version": 0,
+                               "payload": {"group_name": "ИС-21", "course": 3,
+                                           "student_card": "21-ИС-042"}}]})
+    assert push.status_code == 200, push.text
+    result = push.json()["results"][0]
+    assert result["status"] == "applied"
+    assert result.get("resolved") == "natural_key"
+
+    profiles = hub.client.get("/api/student/profile", headers=hub.headers).json()
+    assert profiles["course"] == 3
+    assert profiles["student_card"] == "21-ИС-042"
+
+    with hub.db.session() as db:
+        from ecosystem.backend.models import StudentProfile
+        from sqlalchemy import select as sa_select
+
+        rows = db.execute(sa_select(StudentProfile)).scalars().all()
+    assert len(rows) == 1, "второй профиль не должен появиться"
+
+
+def test_preference_from_other_device_does_not_break_unique_key(hub):
+    dev = _device(hub)
+    hub.client.put("/api/preferences", headers=hub.headers,
+                   json={"key": "theme", "value": "dark"})
+    foreign_id = "77777777-7777-5777-8777-777777777777"
+    push = hub.client.post("/api/sync/push", headers={"X-Device-Token": dev["token"]},
+                           json={"operations": [{
+                               "op_id": "op-pref-1", "entity": "preference",
+                               "entity_id": foreign_id, "operation": "upsert",
+                               "base_version": 0,
+                               "payload": {"key": "theme", "value": {"v": "light"}}}]})
+    assert push.status_code == 200, push.text
+    assert push.json()["results"][0]["status"] == "applied"
+    assert push.json()["results"][0].get("resolved") == "natural_key"
+    prefs = hub.client.get("/api/preferences", headers=hub.headers).json()["preferences"]
+    assert prefs["theme"] == "light"
+
+
+def test_student_status_sees_profile_after_sync(hub):
+    """Статус не должен «терять» профиль, пришедший с другого узла."""
+    dev = _device(hub)
+    push = hub.client.post("/api/sync/push", headers={"X-Device-Token": dev["token"]},
+                           json={"operations": [{
+                               "op_id": "op-status-1", "entity": "student_profile",
+                               "entity_id": "88888888-8888-5888-8888-888888888888",
+                               "operation": "upsert", "base_version": 0,
+                               "payload": {"group_name": "ИС-22", "course": 2}}]})
+    assert push.status_code == 200, push.text
+    status = hub.client.get("/api/student/status", headers=hub.headers).json()
+    assert status["profile"] is not None
+    assert status["profile"]["group_name"] == "ИС-22"
+    # source != legacy_import: запись пришла синхронизацией, а не импортом старой базы
+    assert status["profile"]["source"] in ("manual", "legacy_import")
+    assert set(status["imported"]) == {"tasks", "schedule", "profile"}

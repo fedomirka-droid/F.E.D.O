@@ -23,6 +23,7 @@ from ..models import (
     ChangeLog,
     OutboxEntry,
     ScheduleEntry,
+    StudentProfile,
     SyncConflict,
     SyncOperation,
     SyncState,
@@ -35,6 +36,7 @@ ENTITY_MODELS: dict[str, Any] = {
     "event": CalendarEvent,
     "schedule": ScheduleEntry,
     "preference": UserPreference,
+    "student_profile": StudentProfile,
 }
 
 SYNC_FIELDS: dict[str, tuple[str, ...]] = {
@@ -44,7 +46,34 @@ SYNC_FIELDS: dict[str, tuple[str, ...]] = {
     "schedule": ("group_name", "date", "slot", "start_time", "end_time", "subject",
                  "teacher", "room", "lesson_type", "source_file", "source_sheet"),
     "preference": ("key", "value"),
+    "student_profile": ("group_name", "college", "specialty", "course", "semester",
+                        "study_form", "student_card", "notes", "source"),
 }
+
+# Сущности с уникальностью на уровне владельца. Их id на разных устройствах
+# может отличаться (например профиль студента выводится из owner_id, а он у
+# каждого узла свой), поэтому перед созданием ищем запись по натуральному ключу
+# и обновляем её — иначе UNIQUE-констрейнт ломает синхронизацию.
+UNIQUE_ENTITY_KEYS: dict[str, tuple[str, ...]] = {
+    "preference": ("key",),
+    "student_profile": (),   # одна запись на владельца
+}
+
+
+def resolve_unique_entity(db: Session, owner_id: str, entity: str,
+                          payload: dict) -> Any | None:
+    """Найти существующую запись по натуральному ключу (или None)."""
+    keys = UNIQUE_ENTITY_KEYS.get(entity)
+    if keys is None:
+        return None
+    model = ENTITY_MODELS[entity]
+    query = select(model).where(model.owner_id == owner_id)
+    for key in keys:
+        if key not in payload:
+            return None
+        query = query.where(getattr(model, key) == payload[key])
+    return db.execute(query).scalars().first()
+
 
 DATETIME_FIELDS = {
     "due_at", "remind_at", "started_at", "completed_at", "starts_at", "ends_at",
@@ -162,6 +191,29 @@ def apply_operation(db: Session, owner_id: str, device_id: str, entity: str,
             result = {"status": "applied", "op_id": op_id, "entity_id": entity_id,
                       "version": 0, "noop": True}
         else:
+            natural = resolve_unique_entity(db, owner_id, entity, payload)
+            if natural is not None:
+                # та же запись, что уже есть под другим id — обновляем её
+                obj = natural
+                entity_id = obj.id
+                server_version = obj.version
+                if _fields_equal(obj, entity, payload):
+                    result = {"status": "applied", "op_id": op_id, "entity_id": entity_id,
+                              "version": server_version, "updated_at": iso(obj.updated_at),
+                              "duplicate": True, "resolved": "natural_key"}
+                else:
+                    _apply_payload(obj, entity, payload)
+                    obj.version = server_version + 1
+                    obj.updated_at = now
+                    obj.origin_device = device_id
+                    db.flush()
+                    _record_change(db, owner_id, entity, entity_id, obj, "upsert", device_id)
+                    result = {"status": "applied", "op_id": op_id, "entity_id": entity_id,
+                              "version": obj.version, "resolved": "natural_key"}
+                db.add(SyncOperation(owner_id=owner_id, op_id=op_id, device_id=device_id,
+                                     entity=entity, entity_id=entity_id, result=result))
+                db.flush()
+                return result
             obj = model(id=entity_id, owner_id=owner_id, version=1,
                         origin_device=device_id, updated_at=now, created_at=now)
             # обязательные поля (title / date / key) — из payload
@@ -323,12 +375,23 @@ def apply_remote_change(db: Session, owner_id: str, change: dict) -> str:
     if obj is None:
         if change.get("operation") == "delete":
             return "skipped"
-        obj = model(id=entity_id, owner_id=owner_id, version=remote_version,
-                    origin_device=change.get("device_id"))
+        natural = resolve_unique_entity(db, owner_id, entity, payload)
+        if natural is not None:
+            # локальная копия той же логической записи под другим id
+            obj = natural
+        else:
+            obj = model(id=entity_id, owner_id=owner_id, version=remote_version,
+                        origin_device=change.get("device_id"))
+            _apply_payload(obj, entity, payload)
+            obj.updated_at = parse_dt(payload.get("updated_at")) or utcnow()
+            obj.deleted_at = parse_dt(payload.get("deleted_at"))
+            db.add(obj)
+            db.flush()
+            return "applied"
         _apply_payload(obj, entity, payload)
+        obj.version = max(remote_version, int(obj.version or 0) + 1)
         obj.updated_at = parse_dt(payload.get("updated_at")) or utcnow()
         obj.deleted_at = parse_dt(payload.get("deleted_at"))
-        db.add(obj)
         db.flush()
         return "applied"
 

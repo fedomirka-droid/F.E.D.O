@@ -56,6 +56,60 @@ export type Device = {
   last_seen_at: string | null;
   notes: string;
   pending_commands: number;
+  command_allowlist: { label: string; command: string }[];
+  paired_at: string | null;
+};
+
+export type AiHealth = {
+  mode: string;
+  local: { available: boolean; models: string[]; selected: string; error: string };
+  remote_node: { configured: boolean; available: boolean };
+  cloud: {
+    provider: string;
+    key_configured: boolean;
+    allowed: boolean;
+    usable: boolean;
+    reason: string;
+  };
+  fallback_plan: { kind: string; label: string; cloud: boolean }[];
+  can_answer: boolean;
+  privacy: string;
+};
+
+export type StudentProfile = {
+  id: string;
+  group_name: string;
+  college: string;
+  specialty: string;
+  course: number;
+  semester: number;
+  study_form: string;
+  student_card: string;
+  notes: string;
+  source: string;
+  version: number;
+  updated_at: string | null;
+};
+
+export type StudentStatus = {
+  state: "blocked" | "adapter_ready";
+  integration: "blocked" | "ready_for_import";
+  found: { path: string; found_at: string; why: string }[];
+  missing: { path: string; why: string }[];
+  databases: { path: string; tables: string[]; legacy_tables: string[] }[];
+  imported: { tasks: number; schedule: number; profile: boolean };
+  blocked_reason: string | null;
+  note: string;
+};
+
+export type BackendHealth = {
+  status: string;
+  version: string;
+  edition: string;
+  role: string;
+  core: string;
+  sync: { enabled: boolean; hub_configured: boolean };
+  time: string;
 };
 
 export type CommandAction = {
@@ -75,6 +129,8 @@ export type DeviceCommand = {
   result: Record<string, unknown>;
   created_at: string;
   finished_at: string | null;
+  expires_at: string | null;
+  executed_at: string | null;
 };
 
 export type AiSettings = {
@@ -201,6 +257,22 @@ export const put = <T>(path: string, body: unknown) =>
 export const patch = <T>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 export const del = <T>(path: string) => api<T>(path, { method: "DELETE" });
+
+export type LessonInput = {
+  date: string;
+  subject: string;
+  start_time?: string;
+  end_time?: string;
+  teacher?: string;
+  room?: string;
+  lesson_type?: string;
+  group_name?: string;
+};
+
+export const createLesson = (lesson: LessonInput) => post<Lesson>("/api/schedule", lesson);
+export const updateLesson = (id: string, lesson: LessonInput) =>
+  patch<Lesson>(`/api/schedule/${id}`, lesson);
+export const deleteLesson = (id: string) => del<{ ok: boolean }>(`/api/schedule/${id}`);
 
 export async function uploadSchedule(file: File, group: string, date: string): Promise<any> {
   const form = new FormData();

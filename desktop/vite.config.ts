@@ -17,5 +17,6 @@ export default defineConfig(({ mode }) => {
     },
     preview: { host: "0.0.0.0", port: 4173, allowedHosts: true },
     build: { outDir: "dist", sourcemap: false, target: "es2022" },
+    test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
   };
 });

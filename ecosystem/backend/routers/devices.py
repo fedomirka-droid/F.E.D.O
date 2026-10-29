@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from ..db import iso, utcnow
 from ..deps import DbDep, DeviceDep, OwnerDep, SettingsDep, audit
-from ..models import Device, DeviceCommand
+from ..models import Device, DeviceCommand, PairingCode
 from ..security import SecretBox, new_token, token_hash, verify_signature
 from ..services import device_service
 from ..services.serializers import device_summary
@@ -33,6 +33,20 @@ class DeviceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     capabilities: list[str] | None = None
     notes: str | None = Field(default=None, max_length=255)
+    command_allowlist: list[dict] | None = Field(default=None, max_length=20)
+
+
+class PairingCreate(BaseModel):
+    device_name: str = Field(default="", max_length=80)
+    device_kind: str = Field(default="desktop", pattern="^(desktop|gpu|hub|controller)$")
+    ttl_minutes: int = Field(default=10, ge=1, le=60)
+
+
+class PairingRedeem(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+    name: str = Field(min_length=1, max_length=80)
+    kind: str = Field(default="desktop", pattern="^(desktop|gpu|hub|controller)$")
+    platform: str = Field(default="", max_length=120)
 
 
 class CommandCreate(BaseModel):
@@ -109,8 +123,70 @@ def update_device(device_id: str, payload: DeviceUpdate, auth: OwnerDep, db: DbD
         device.capabilities = payload.capabilities
     if payload.notes is not None:
         device.notes = payload.notes
+    if payload.command_allowlist is not None:
+        try:
+            device.command_allowlist = device_service.normalize_allowlist(payload.command_allowlist)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.flush()
     return device_summary(device)
+
+
+# --------------------------------------------------------------------------- #
+# Привязка нового устройства по одноразовому коду
+# --------------------------------------------------------------------------- #
+@router.post("/pairing-code")
+def create_pairing_code(payload: PairingCreate, auth: OwnerDep, db: DbDep) -> dict:
+    code = f"{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}".upper()
+    record = PairingCode(
+        id=str(uuid.uuid4()), owner_id=auth.owner.id, code_hash=token_hash(code),
+        device_name=payload.device_name.strip(), device_kind=payload.device_kind,
+        expires_at=utcnow() + timedelta(minutes=payload.ttl_minutes),
+    )
+    db.add(record)
+    db.flush()
+    audit(db, auth.owner.id, "device.pairing_code", target=record.id)
+    return {"code": code, "expires_at": iso(record.expires_at),
+            "device_kind": record.device_kind,
+            "warning": "Код одноразовый и в базе не хранится в открытом виде"}
+
+
+@router.post("/pair")
+def pair_device(payload: PairingRedeem, db: DbDep, settings: SettingsDep) -> dict:
+    """Устройство регистрируется само, зная только одноразовый код.
+
+    Публичный эндпоинт, но без валидного неиспользованного кода ничего не
+    создаёт. Возвращает токен устройства и секрет канала — один раз.
+    """
+    code_hash = token_hash(payload.code.strip().upper())
+    record = db.execute(select(PairingCode).where(PairingCode.code_hash == code_hash)
+                        ).scalar_one_or_none()
+    if record is None or record.used_at is not None:
+        raise HTTPException(status_code=400, detail="Код недействителен или уже использован")
+    if record.expires_at < utcnow():
+        raise HTTPException(status_code=400, detail="Срок действия кода истёк")
+    owner_devices = db.execute(select(Device).where(Device.owner_id == record.owner_id)
+                               ).scalars().all()
+    if any(d.name == payload.name and d.revoked_at is None for d in owner_devices):
+        raise HTTPException(status_code=409, detail="Устройство с таким именем уже есть")
+
+    token = new_token("dev_")
+    channel_secret = new_token()
+    device = Device(
+        id=str(uuid.uuid4()), owner_id=record.owner_id, name=payload.name.strip(),
+        kind=payload.kind, platform=payload.platform, token_hash=token_hash(token),
+        channel_secret_enc=SecretBox(settings.secret_key).encrypt(channel_secret),
+        capabilities=[], status="offline", pairing_confirmed_at=utcnow(),
+    )
+    db.add(device)
+    db.flush()
+    record.used_at = utcnow()
+    record.used_by_device = device.id
+    db.flush()
+    audit(db, record.owner_id, "device.paired", target=device.id, name=device.name)
+    return {"device": device_summary(device), "token": token,
+            "channel_secret": channel_secret,
+            "warning": "Сохрани токен и секрет: они больше не будут показаны"}
 
 
 @router.post("/{device_id}/rotate-token")
@@ -239,6 +315,7 @@ def _command_public(command: DeviceCommand) -> dict:
         "id": command.id, "device_id": command.device_id, "action": command.action,
         "params": command.params, "status": command.status,
         "requires_confirmation": command.requires_confirmation,
+        "expires_at": iso(command.expires_at), "executed_at": iso(command.executed_at),
         "requested_by": command.requested_by, "result": command.result,
         "created_at": iso(command.created_at), "confirmed_at": iso(command.confirmed_at),
         "delivered_at": iso(command.delivered_at), "finished_at": iso(command.finished_at),

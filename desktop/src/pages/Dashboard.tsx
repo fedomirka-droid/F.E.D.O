@@ -4,10 +4,13 @@ import {
   formatDateTime,
   get,
   post,
+  type AiHealth,
   type AiModels,
   type AiUsage,
+  type BackendHealth,
   type Device,
   type Lesson,
+  type StudentProfile,
   type SyncStatus,
   type Task,
 } from "../api";
@@ -21,18 +24,27 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey) => void 
   const [models, setModels] = useState<AiModels | null>(null);
   const [usage, setUsage] = useState<AiUsage | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
+  const [health, setHealth] = useState<BackendHealth | null>(null);
+  const [aiHealth, setAiHealth] = useState<AiHealth | null>(null);
+  const [profile, setProfile] = useState<StudentProfile | null>(null);
+  const [tomorrow, setTomorrow] = useState<Lesson[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const toast = useToast();
 
   const load = useCallback(async () => {
-    const [today, schedule, deviceList, modelList, usageData, syncData] = await Promise.allSettled([
+    const [today, schedule, deviceList, modelList, usageData, syncData,
+           healthData, aiHealthData, profileData, tomorrowData] = await Promise.allSettled([
       get<{ tasks: Task[] }>("/api/tasks/today"),
       get<{ entries: Lesson[] }>("/api/schedule/today"),
       get<{ devices: Device[] }>("/api/devices"),
       get<AiModels>("/api/ai/models"),
       get<AiUsage>("/api/ai/usage"),
       get<SyncStatus>("/api/sync/status"),
+      get<BackendHealth>("/api/health"),
+      get<AiHealth>("/api/ai/health"),
+      get<StudentProfile>("/api/student/profile"),
+      get<{ entries: Lesson[] }>("/api/schedule/tomorrow"),
     ]);
     if (today.status === "fulfilled") setTasks(today.value.tasks);
     if (schedule.status === "fulfilled") setLessons(schedule.value.entries);
@@ -40,6 +52,10 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey) => void 
     if (modelList.status === "fulfilled") setModels(modelList.value);
     if (usageData.status === "fulfilled") setUsage(usageData.value);
     if (syncData.status === "fulfilled") setSync(syncData.value);
+    if (healthData.status === "fulfilled") setHealth(healthData.value);
+    if (aiHealthData.status === "fulfilled") setAiHealth(aiHealthData.value);
+    if (profileData.status === "fulfilled") setProfile(profileData.value);
+    if (tomorrowData.status === "fulfilled") setTomorrow(tomorrowData.value.entries);
     setLoading(false);
   }, []);
 
@@ -60,6 +76,13 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey) => void 
       setBusyId("");
     }
   };
+
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const nextLesson = lessons.find((lesson) => {
+    const [hours, minutes] = (lesson.end_time || lesson.start_time || "23:59").split(":").map(Number);
+    return hours * 60 + (minutes || 0) >= nowMinutes;
+  });
+  const inProgress = tasks.find((task) => task.status === "in_progress");
 
   const hour = new Date().getHours();
   const greeting = hour < 6 ? "Доброй ночи" : hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
@@ -85,6 +108,78 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey) => void 
           </div>
         </div>
       </div>
+
+      {nextLesson || inProgress ? (
+        <div className="grid cols-2">
+          <div className="card">
+            <div className="card-title"><h3>Следующее занятие</h3></div>
+            {nextLesson ? (
+              <div className="stack small">
+                <div className="row between">
+                  <span className="mono">{nextLesson.start_time}{nextLesson.end_time ? `–${nextLesson.end_time}` : ""}</span>
+                  <Badge tone="accent">{nextLesson.group_name}</Badge>
+                </div>
+                <div><strong>{nextLesson.subject}</strong></div>
+                <div className="muted small">
+                  {[nextLesson.teacher, nextLesson.room, nextLesson.lesson_type].filter(Boolean).join(" · ") || "—"}
+                </div>
+              </div>
+            ) : (
+              <Empty text="На сегодня занятий больше нет" />
+            )}
+            <div className="divider" style={{ margin: "10px 0" }} />
+            <div className="row between small">
+              <span className="muted">Завтра пар</span>
+              <span>{tomorrow.length}</span>
+            </div>
+            {tomorrow[0] ? (
+              <div className="small faint">
+                первая: {tomorrow[0].start_time || "—"} · {tomorrow[0].subject}
+              </div>
+            ) : null}
+            {profile ? (
+              <div className="row between small" style={{ marginTop: 6 }}>
+                <span className="muted">Группа</span>
+                <span>{profile.group_name}{profile.course ? ` · ${profile.course} курс` : ""}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card">
+            <div className="card-title"><h3>Сейчас в работе</h3></div>
+            {inProgress ? (
+              <div className="stack small">
+                <div className="row between">
+                  <strong className="truncate">{inProgress.title}</strong>
+                  <Badge tone="accent">in progress</Badge>
+                </div>
+                <div className="small muted">
+                  план {inProgress.planned_minutes || 0} мин
+                  {inProgress.actual_minutes ? ` · факт ${inProgress.actual_minutes} мин` : ""}
+                  {inProgress.due_at ? ` · срок ${formatDateTime(inProgress.due_at)}` : ""}
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn small primary" disabled={busyId === inProgress.id}
+                          onClick={() => act(inProgress, "complete")}>Завершить</button>
+                  <button className="btn small" disabled={busyId === inProgress.id}
+                          onClick={() => act(inProgress, "snooze")}>⏰ отложить 15 мин</button>
+                  <button className="btn small" disabled={busyId === inProgress.id}
+                          onClick={() => act(inProgress, "time")}>⏱ +15 факт</button>
+                </div>
+              </div>
+            ) : (
+              <Empty text="Ни одна задача не запущена. Нажми «Начать» в списке ниже." />
+            )}
+            <div className="divider" style={{ margin: "10px 0" }} />
+            <div className="row between small">
+              <span className="muted">AI</span>
+              <Badge tone={aiHealth?.can_answer ? "success" : "warning"}>
+                {aiHealth?.can_answer ? `${aiHealth.mode} · готов` : "нет провайдера"}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid cols-4">
         <div className="card">
@@ -221,6 +316,12 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey) => void 
 
         <div className="card">
           <div className="card-title"><h3>Синхронизация</h3></div>
+          <div className="stack small" style={{ marginBottom: 8 }}>
+            <div className="row between">
+              <span className="muted">Backend</span>
+              <span className="mono">{health?.role ?? "—"} · {health?.core ?? "—"}</span>
+            </div>
+          </div>
           <div className="stack small">
             <div className="row between">
               <span className="muted">HUB</span>

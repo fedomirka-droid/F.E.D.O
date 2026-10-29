@@ -95,6 +95,12 @@ def put_settings(payload: AiSettingsUpdate, auth: OwnerDep, db: DbDep, settings:
     return _settings_public(ai)
 
 
+@router.get("/health")
+async def health(auth: OwnerDep, db: DbDep, settings: SettingsDep, request: Request) -> dict:
+    """Состояние провайдеров: локальная модель, домашний узел, облако (без секретов)."""
+    return await _router(db, settings, request).health(auth.owner.id)
+
+
 @router.get("/models")
 async def models(auth: OwnerDep, db: DbDep, settings: SettingsDep, request: Request) -> dict:
     return await _router(db, settings, request).models(auth.owner.id)

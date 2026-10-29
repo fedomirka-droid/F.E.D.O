@@ -4,6 +4,7 @@ import {
   get,
   put,
   streamChat,
+  type AiHealth,
   type AiModels,
   type AiSettings,
   type AiUsage,
@@ -34,17 +35,20 @@ export function Assistant() {
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceStep[]>([]);
   const [lastRoute, setLastRoute] = useState<{ provider: string; cloud: boolean } | null>(null);
+  const [health, setHealth] = useState<AiHealth | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const toast = useToast();
 
   const loadMeta = useCallback(async () => {
-    const [conversationList, modelList, settingsData, usageData] = await Promise.allSettled([
-      get<{ conversations: Conversation[] }>("/api/ai/conversations"),
-      get<AiModels>("/api/ai/models"),
-      get<AiSettings>("/api/ai/settings"),
-      get<AiUsage>("/api/ai/usage"),
-    ]);
+    const [conversationList, modelList, settingsData, usageData, healthData] =
+      await Promise.allSettled([
+        get<{ conversations: Conversation[] }>("/api/ai/conversations"),
+        get<AiModels>("/api/ai/models"),
+        get<AiSettings>("/api/ai/settings"),
+        get<AiUsage>("/api/ai/usage"),
+        get<AiHealth>("/api/ai/health"),
+      ]);
     if (conversationList.status === "fulfilled") setConversations(conversationList.value.conversations);
     if (modelList.status === "fulfilled") setModels(modelList.value);
     if (settingsData.status === "fulfilled") {
@@ -52,6 +56,7 @@ export function Assistant() {
       setMode(settingsData.value.mode);
     }
     if (usageData.status === "fulfilled") setUsage(usageData.value);
+    if (healthData.status === "fulfilled") setHealth(healthData.value);
   }, []);
 
   useEffect(() => {
@@ -90,6 +95,17 @@ export function Assistant() {
       await loadMeta();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось изменить режим");
+    }
+  };
+
+  const updateConsent = async (patch: Partial<AiSettings>) => {
+    try {
+      const updated = await put<AiSettings>("/api/ai/settings", patch);
+      setSettings(updated);
+      await loadMeta();
+      toast.success("Настройки приватности сохранены");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Не удалось сохранить");
     }
   };
 
@@ -203,6 +219,60 @@ export function Assistant() {
             <span className="hint">{usage.cloud_block_reason}</span>
           ) : null}
         </div>
+        <div className="divider" />
+        <div className="stack small">
+          <div className="label">Согласие на облако</div>
+          <label className="row small" style={{ gap: 8 }}>
+            <input type="checkbox" checked={Boolean(settings?.allow_cloud)}
+                   onChange={(event) => updateConsent({ allow_cloud: event.target.checked })} />
+            <span>Разрешить отправку запросов</span>
+          </label>
+          <label className="row small" style={{ gap: 8 }}>
+            <input type="checkbox" checked={Boolean(settings?.allow_history_to_cloud)}
+                   disabled={!settings?.allow_cloud}
+                   onChange={(event) => updateConsent({ allow_history_to_cloud: event.target.checked })} />
+            <span>Разрешить передачу истории диалога</span>
+          </label>
+          <span className="hint">
+            Без первого согласия Router работает только с локальной моделью —
+            режим Local Only принудительно отключает облако.
+          </span>
+        </div>
+        {health ? (
+          <>
+            <div className="divider" />
+            <div className="stack small">
+              <div className="label">Провайдеры</div>
+              <div className="row between">
+                <span className="muted">LM Studio</span>
+                <Badge tone={health.local.available ? "success" : "warning"}>
+                  {health.local.available ? `${health.local.models.length} модел.` : "недоступен"}
+                </Badge>
+              </div>
+              <div className="row between">
+                <span className="muted">Домашний узел</span>
+                <Badge tone={health.remote_node.available ? "success" : "danger"}>
+                  {health.remote_node.configured
+                    ? health.remote_node.available ? "онлайн" : "офлайн"
+                    : "не настроен"}
+                </Badge>
+              </div>
+              <div className="row between">
+                <span className="muted">Облако ({health.cloud.provider})</span>
+                <Badge tone={health.cloud.usable ? "warning" : "danger"}>
+                  {health.cloud.usable ? "готово" : health.cloud.reason || "запрещено"}
+                </Badge>
+              </div>
+              {health.fallback_plan.length > 0 ? (
+                <span className="hint">
+                  Маршрут: {health.fallback_plan.map((step) => step.label).join(" → ")}
+                </span>
+              ) : (
+                <span className="hint">Нет доступных провайдеров — проверь Настройки AI.</span>
+              )}
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>

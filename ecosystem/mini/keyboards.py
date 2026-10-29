@@ -14,6 +14,8 @@ def main_menu() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🖥 Статус ПК", callback_data="menu:devices")],
         [InlineKeyboardButton(text="🤖 Спросить AI", callback_data="menu:ai"),
          InlineKeyboardButton(text="📊 Статус", callback_data="menu:status")],
+        [InlineKeyboardButton(text="🔍 Проверить компьютер", callback_data="menu:checkpc"),
+         InlineKeyboardButton(text="🔄 Обновить", callback_data="menu:refresh")],
     ])
 
 

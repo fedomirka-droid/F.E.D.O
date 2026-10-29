@@ -37,6 +37,7 @@ HELP_TEXT = (
     "<b>F.E.D.O. Mini</b>\n"
     "/start — меню\n"
     "/today — занятия и задачи на сегодня\n"
+    "/tomorrow — план на завтра\n"
     "/tasks — все задачи\n"
     "/schedule — расписание (сегодня/завтра)\n"
     "/devices — устройства и статус ПК\n"
@@ -106,6 +107,29 @@ async def cmd_today(message: Message) -> None:
     if isinstance(result, tuple):
         await message.answer(result[1]); return
     await message.answer(fmt.format_today(result), reply_markup=main_menu())
+
+
+@router.message(Command("tomorrow"))
+async def cmd_tomorrow(message: Message) -> None:
+    schedule = await _safe(lambda: hub().schedule(message.from_user.id, "tomorrow"))
+    if isinstance(schedule, tuple):
+        await message.answer(schedule[1]); return
+    task_list = await _safe(lambda: hub().tasks(message.from_user.id))
+    tasks_text = ""
+    if not isinstance(task_list, tuple):
+        due_tomorrow = [t for t in (task_list.get("tasks") or [])
+                        if (t.get("due_at") or "").startswith(_tomorrow_date())]
+        if due_tomorrow:
+            tasks_text = "\n\n<b>Задачи на завтра</b>\n" + "\n".join(
+                fmt.format_task(t) for t in due_tomorrow[:10])
+    await message.answer(fmt.format_schedule(schedule, "Завтра") + tasks_text,
+                         reply_markup=main_menu())
+
+
+def _tomorrow_date() -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
 
 
 @router.message(Command("tasks"))
@@ -252,6 +276,32 @@ async def cb_status(call: CallbackQuery) -> None:
         await call.answer(result[1], show_alert=True); return
     await call.message.edit_text(fmt.format_status(result), reply_markup=main_menu())
     await call.answer()
+
+
+@router.callback_query(F.data == "menu:refresh")
+async def cb_refresh(call: CallbackQuery) -> None:
+    result = await _safe(lambda: hub().status(call.from_user.id))
+    if isinstance(result, tuple):
+        await call.answer(result[1], show_alert=True); return
+    await call.message.edit_text(fmt.format_status(result), reply_markup=main_menu())
+    await call.answer("Обновлено")
+
+
+@router.callback_query(F.data == "menu:checkpc")
+async def cb_check_pc(call: CallbackQuery) -> None:
+    """Проверить компьютер: статус всех устройств и статистика доступных."""
+    result = await _safe(lambda: hub().devices(call.from_user.id))
+    if isinstance(result, tuple):
+        await call.answer(result[1], show_alert=True); return
+    devices = result.get("devices") or []
+    await call.message.edit_text(fmt.format_devices(result),
+                                 reply_markup=devices_menu(devices))
+    await call.answer("Проверено")
+    for device in devices[:2]:
+        if device.get("status") != "online":
+            continue
+        await _safe(lambda d=device: hub().device_command(
+            call.from_user.id, d["id"], "stats"))
 
 
 @router.callback_query(F.data == "menu:add")

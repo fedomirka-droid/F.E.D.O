@@ -203,3 +203,44 @@ def test_import_damaged_file_reports_warning(harness):
                                files={"file": ("broken.xlsx", b"garbage-bytes",
                                                "application/vnd.ms-excel")})
     assert resp.status_code == 422
+
+
+def test_noise_rows_do_not_become_lessons():
+    """Даты, номера пар и заголовки групп не превращаются в «предметы»."""
+    from ecosystem.backend.services.schedule_import import _is_noise_cell
+
+    for text in ("30.10.2026", "12.05", "1 пара", "пара 2", "3", "Время",
+                 "ИС-21", "Понедельник", "10:10-11:40", ""):
+        assert _is_noise_cell(text), text
+    for text in ("Математика", "Базы данных", "Физика (лабораторная) Иванов И.И."):
+        assert _is_noise_cell(text) == "", text
+
+
+def test_merged_label_block_without_subjects_is_not_fabricated():
+    """Excel-блок с датой и «N пара» (как в реальных шапках) не даёт занятий."""
+    wb = _workbook()
+    ws = wb.active
+    ws["A1"] = "Расписание ИС-21"
+    ws["B2"], ws["C2"] = "ИС-21", "ИС-22"
+    ws["A3"] = "30.10.2026"
+    ws.merge_cells("B3:B4")
+    ws["B3"] = "1 пара"
+    ws["A5"], ws["B5"] = "2 пара", "ЧУЖОЕ (ИС-22)"
+    result = parse_schedule(_bytes(wb), filename="labels.xlsx")
+    assert result.entries == []
+    assert result.warnings, "должно быть предупреждение, а не выдуманные занятия"
+
+
+def test_real_table_layout_imports_cleanly():
+    wb = _workbook()
+    ws = wb.active
+    ws["A1"], ws["B1"], ws["C1"], ws["D1"] = "Пара", "Время", "ИС-21", "ИС-22"
+    ws["A2"], ws["B2"], ws["C2"] = 1, "09:00-10:30", "Сети (лекция) Иванов И.И. каб. 204"
+    ws["D2"] = "ЧУЖАЯ: экономика"
+    ws["A3"], ws["B3"], ws["C3"] = 2, "10:40-12:10", "Базы данных (практика) Петрова А.С. ауд. 301"
+    result = parse_schedule(_bytes(wb), filename="week.xlsx", date_override="2026-10-30")
+    assert [e["subject"] for e in result.entries] == ["Сети", "Базы данных"]
+    assert all(e["date"] == "2026-10-30" for e in result.entries)
+    assert result.entries[0]["start_time"] == "09:00"
+    assert result.entries[1]["room"] == "ауд. 301"
+    assert not any("экономика" in e["subject"].lower() for e in result.entries)

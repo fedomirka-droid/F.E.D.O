@@ -187,11 +187,23 @@ CAPWORD_RE = re.compile(r"[А-ЯЁ][а-яё\-]+")
 FULLNAME_RE = re.compile(r"[А-ЯЁ][а-яё\-]+\s+[А-ЯЁ][а-яё\-]+\s+[А-ЯЁ][а-яё\-]+")
 
 
+ISO_DATE_RE = re.compile(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$")
+
+
 def parse_date(text: str, default_year: int | None = None) -> date | None:
-    """Распознать дату в строке (12.05.2025, 12.05, «12 мая 2025»)."""
+    """Распознать дату: ISO (2026-10-30), 12.05.2025, 12.05, «12 мая 2025».
+
+    ISO нужен потому, что <input type="date"> в Desktop присылает именно его.
+    """
     if not text:
         return None
     raw = str(text).strip()
+    iso = ISO_DATE_RE.match(raw)
+    if iso:
+        try:
+            return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
     m = DATE_RE.search(raw)
     if m:
         day, month = int(m.group(1)), int(m.group(2))
@@ -315,6 +327,47 @@ class ImportResult:
 
 DATE_WITH_YEAR_RE = re.compile(r"(\d{1,2})[._\-/](\d{1,2})[._\-/](\d{4})")
 
+# Служебные подписи, которые стоят в столбце группы, но занятием не являются.
+NOISE_LABELS = (
+    "пара", "урок", "занятие", "перерыв", "обед", "время", "день", "дата",
+    "расписание", "группа", "кабинет", "преподаватель", "предмет", "дисциплина",
+    "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+)
+NO_LESSON_RE = re.compile(r"^\s*(?:\d+\s*)?(?:пара|урок|занятие)?\s*\d*\s*$", re.IGNORECASE)
+
+
+def _is_noise_cell(text: str) -> str:
+    """Похоже ли содержимое ячейки на служебную подпись, а не на предмет.
+
+    Возвращает причину, если да (пустая строка — это нормальный предмет).
+    Нужно, чтобы даты, номера пар и заголовки не превращались в «занятия».
+    «Занятий не придумываем» — требование импорта.
+    """
+    raw = " ".join((text or "").split())
+    if not raw:
+        return "пустая ячейка"
+    letters = re.sub(r"[^\wА-Яа-яЁё]", "", raw)
+    if len(letters) < 3 and not re.search(r"[А-Яа-яЁёA-Za-z]{3,}", raw):
+        return "слишком короткий текст"
+    if parse_date(raw) is not None and len(raw) <= 12:
+        return "это дата, а не предмет"
+    if parse_time_range(raw) or TIME_RANGE_RE.fullmatch(raw.strip()):
+        return "это время, а не предмет"
+    if NO_LESSON_RE.match(raw):
+        return "номер пары без предмета"
+    low = raw.lower().strip(" .:;-")
+    if low in NOISE_LABELS:
+        return "служебная подпись"
+    # «ИС-21», «ЭК 31» — это заголовок группы, а не предмет
+    if groups_in_cell(raw) and re.fullmatch(r"[А-ЯЁA-Z]{2,5}[\s\-–—]*\d{1,2}", raw.upper().strip()):
+        return "это название группы, а не предмет"
+    if re.fullmatch(r"[\d\s.,:;\-/]+", raw):
+        return "только цифры"
+    # «1 пара» / «пара 2»
+    if re.fullmatch(r"(?:пара|урок|занятие)\s*\d+|\d+\s*(?:пара|урок|занятие)", low):
+        return "номер пары без предмета"
+    return ""
+
 
 def _parse_date_with_year(text: str) -> date | None:
     """Дата только в полном виде (дд.мм.гггг) — для имён файлов и листов."""
@@ -413,8 +466,14 @@ def parse_schedule(data: bytes, filename: str = "", group: str = GROUP_DEFAULT,
                 )
                 continue
 
+            noise = _is_noise_cell(cell_text)
+            if noise:
+                result.warnings.append(
+                    f"Лист «{sheet.name}», строка {r}: «{cell_text[:40]}» пропущено — {noise}"
+                )
+                continue
             parts = split_lesson(cell_text)
-            if not parts["subject"]:
+            if not parts["subject"] or _is_noise_cell(parts["subject"]):
                 continue
             result.entries.append({
                 "group_name": group,

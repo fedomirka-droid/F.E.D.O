@@ -1,5 +1,7 @@
+# F.E.D.O. Mini (Telegram) — шаблон systemd.
+# Подключается к HUB по HTTP (127.0.0.1:8765), своей базы задач не имеет.
 [Unit]
-Description=F.E.D.O. Mini (Telegram bot)
+Description=F.E.D.O. Mini (Telegram gateway)
 After=network-online.target fedo-hub.service
 Wants=fedo-hub.service
 
@@ -7,17 +9,19 @@ Wants=fedo-hub.service
 Type=simple
 User=fedo
 Group=fedo
-WorkingDirectory=/opt/fedo/app
-EnvironmentFile=/opt/fedo/.env
+WorkingDirectory=@APP_DIR@/current
+EnvironmentFile=@ENV_FILE@
 Environment=FEDO_ROLE=desktop
-Environment=FEDO_DATA_DIR=/opt/fedo/data-mini
-ExecStart=/opt/fedo/venv/bin/python -m ecosystem.mini
+Environment=FEDO_DATA_DIR=@DATA_DIR@-mini
+Environment=FEDO_HUB_URL=http://127.0.0.1:@PORT@
+ExecStart=@APP_DIR@/current/.venv/bin/python -m ecosystem.mini
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/fedo/data-mini
+ProtectHome=true
+ReadWritePaths=@DATA_DIR@-mini
 MemoryMax=256M
 
 [Install]

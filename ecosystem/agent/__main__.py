@@ -125,6 +125,24 @@ class AgentRunner:
             time.sleep(self.interval)
 
 
+def pair_with_hub(hub_url: str, code: str, name: str, kind: str) -> dict:
+    """Обменять одноразовый код на токен устройства (публичный эндпоинт HUB)."""
+    import httpx
+
+    url = hub_url.rstrip("/") + "/api/devices/pair"
+    resp = httpx.post(url, json={"code": code.strip().upper(), "name": name,
+                                 "kind": kind, "platform": platform.platform()[:120]},
+                      timeout=20)
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            detail = resp.json().get("detail", "")
+        except Exception:
+            detail = resp.text[:200]
+        raise SystemExit(f"Привязка не удалась ({resp.status_code}): {detail}")
+    return resp.json()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="F.E.D.O. Agent")
     saved = load_saved()
@@ -137,9 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kind", default=saved.get("kind", "desktop"),
                         choices=["desktop", "gpu", "hub", "controller"])
     parser.add_argument("--simulate", action="store_true", help="ничего реально не выполнять")
-    parser.add_argument("--allow-power", action="store_true", help="разрешить сон")
+    parser.add_argument("--allow-power", action="store_true", help="разрешить сон и выключение")
+    parser.add_argument("--allow-lock", action="store_true", help="разрешить блокировку экрана")
     parser.add_argument("--allow-ai-control", action="store_true", help="разрешить запуск/останов AI")
     parser.add_argument("--allow-wol", action="store_true", help="разрешить отправку WoL")
+    parser.add_argument("--allow-app", action="append", default=[], metavar="МЕТКА=ПУТЬ",
+                        help="разрешить приложение (можно несколько раз), напр. "
+                             '"Браузер=C:\\Program Files\\Chrome\\chrome.exe"')
+    parser.add_argument("--pair-code", default=os.environ.get("FEDO_PAIR_CODE", ""),
+                        help="одноразовый код привязки из Desktop → Устройства")
     parser.add_argument("--ai-url", default=os.environ.get("FEDO_AI_URL", "http://127.0.0.1:1234/v1"))
     parser.add_argument("--ai-start", default="", help='команда запуска AI, например "lms server start"')
     parser.add_argument("--ai-stop", default="", help="команда остановки AI")
@@ -157,14 +181,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     args = build_parser().parse_args()
+    if args.pair_code:
+        # Привязка по одноразовому коду: устройство само получает токен и секрет.
+        if not args.hub:
+            raise SystemExit("Для --pair-code нужен --hub")
+        paired = pair_with_hub(args.hub, args.pair_code, args.name, args.kind)
+        args.token = paired["token"]
+        args.secret = paired["channel_secret"]
+        args.device_id = paired["device"]["id"]
+        logger.info("device paired: %s (%s)", paired["device"]["name"], args.device_id)
     if not args.hub or not args.token:
-        raise SystemExit("Нужны --hub и --token (токен выдаётся в Desktop → Устройства)")
+        raise SystemExit("Нужны --hub и --token (Desktop → Устройства) "
+                         "либо --pair-code для привязки по коду")
+
+    apps: dict[str, list[str]] = {}
+    for entry in args.allow_app:
+        label, _, command = entry.partition("=")
+        label, command = label.strip(), command.strip()
+        if not label or not command:
+            raise SystemExit(f"Некорректный --allow-app: {entry!r} (нужно МЕТКА=ПУТЬ)")
+        apps[label] = [command]
 
     policy = AgentPolicy(
         simulate=args.simulate,
         allow_power=args.allow_power,
+        allow_lock=args.allow_lock,
         allow_ai_control=args.allow_ai_control,
         allow_wol=args.allow_wol,
+        allow_apps=bool(apps),
+        apps=apps,
         ai_url=args.ai_url,
         ai_start_command=args.ai_start.split() if args.ai_start else [],
         ai_stop_command=args.ai_stop.split() if args.ai_stop else [],

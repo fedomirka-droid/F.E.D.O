@@ -186,6 +186,45 @@ class AiRouter:
             "privacy": "cloud_allowed" if ai.allow_cloud else "local_only_enforced",
         }
 
+    async def health(self, owner_id: str) -> dict:
+        """Быстрый health-check провайдеров: без утечки ключей и без запросов к облаку."""
+        ai = self.ai_settings(owner_id)
+        client = self._client(3.0)
+        local_ok, local_models, local_error = False, [], ""
+        try:
+            local = self.local_provider(ai, client=client)
+            local_models = await local.list_models()
+            local_ok = bool(local_models)
+        except Exception as exc:  # провайдер недоступен — это штатная ситуация
+            local_error = f"{type(exc).__name__}: {exc}"[:200]
+        finally:
+            await client.aclose()
+
+        node = self.remote_node(owner_id)
+        node_ok = False
+        if node is not None:
+            try:
+                node_ok = await node.available()
+            except Exception:
+                node_ok = False
+
+        cloud_key = bool(self._key(owner_id, ai.cloud_provider or "gemini"))
+        allowed, reason = self.cloud_limits(owner_id, ai)
+        plan = self._plan(owner_id, ai, ai.mode or "hybrid")
+        return {
+            "mode": ai.mode,
+            "local": {"available": local_ok, "models": local_models[:10],
+                      "selected": ai.local_model, "error": local_error},
+            "remote_node": {"configured": node is not None, "available": node_ok},
+            "cloud": {"provider": ai.cloud_provider, "key_configured": cloud_key,
+                      "allowed": bool(ai.allow_cloud), "usable": allowed,
+                      "reason": reason},
+            "fallback_plan": [{"kind": kind, "label": label, "cloud": cloud}
+                              for kind, label, cloud in plan],
+            "can_answer": bool(plan),
+            "privacy": "cloud_allowed" if ai.allow_cloud else "local_only_enforced",
+        }
+
     # ------------------------------------------------------------------ #
     # Лимиты
     # ------------------------------------------------------------------ #

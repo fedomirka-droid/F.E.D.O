@@ -58,9 +58,11 @@ def test_safe_command_reaches_agent_signed(hub):
     assert len(poll["commands"]) == 1
     delivered = poll["commands"][0]
     assert delivered["action"] == "status"
+    # подпись покрывает и срок жизни команды (защита от повторного выполнения)
     expected = sign_payload(data["channel_secret"], {
         "command_id": delivered["command_id"], "device_id": delivered["device_id"],
-        "action": delivered["action"], "params": delivered["params"]})
+        "action": delivered["action"], "params": delivered["params"],
+        "expires_at": delivered["expires_at"]})
     assert delivered["signature"] == expected
 
     done = hub.client.post("/api/agent/result", headers={"X-Device-Token": data["token"]},

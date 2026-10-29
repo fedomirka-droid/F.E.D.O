@@ -16,7 +16,7 @@ from sqlalchemy import select
 from .config import APP_VERSION, Settings, get_settings
 from .db import Database, run_migrations
 from .routers import (ai, auth, calendar, devices, monitor, preferences, schedule,
-                      sync, tasks, telegram)
+                      student, sync, system, tasks, telegram)
 from .security import RateLimiter, redact
 
 logger = logging.getLogger("fedo")
@@ -130,7 +130,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None,
 
     for module in (auth.router, tasks.router, calendar.router, schedule.router,
                    devices.router, devices.agent_router, sync.router, ai.router,
-                   monitor.router, preferences.router, telegram.router, telegram.bot):
+                   monitor.router, preferences.router, telegram.router, telegram.bot,
+                   student.router, system.router):
         app.include_router(module)
 
     @app.get("/api/health")

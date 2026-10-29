@@ -93,6 +93,9 @@ class Device(Base, TimestampMixin):
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     notes: Mapped[str] = mapped_column(String(255), default="")
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Белый список приложений, которые агенту разрешено запускать/останавливать
+    command_allowlist: Mapped[list] = mapped_column(JSON, default=list)
+    pairing_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class DeviceCommand(Base):
@@ -115,6 +118,26 @@ class DeviceCommand(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Защита от повторного выполнения: команда живёт до expires_at и
+    # исполняется один раз (executed_at выставляется агентом/HUB).
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PairingCode(Base):
+    """Одноразовый код привязки нового устройства (TTL, одно использование)."""
+
+    __tablename__ = "pairing_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    device_name: Mapped[str] = mapped_column(String(80), default="")
+    device_kind: Mapped[str] = mapped_column(String(24), default="desktop")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    used_by_device: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class AuditLog(Base):
@@ -194,6 +217,29 @@ class UserPreference(Base, TimestampMixin, SyncMixin):
     owner_id: Mapped[str] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
     key: Mapped[str] = mapped_column(String(64), nullable=False)
     value: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class StudentProfile(Base, TimestampMixin, SyncMixin):
+    """Студенческий профиль (Student Edition).
+
+    id детерминирован от owner_id: два устройства, создавшие профиль
+    независимо, получают одну и ту же запись и не плодят дубликаты.
+    """
+
+    __tablename__ = "student_profiles"
+    __table_args__ = (UniqueConstraint("owner_id", name="uq_student_profile_owner"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    group_name: Mapped[str] = mapped_column(String(24), default="ИС-21")
+    college: Mapped[str] = mapped_column(String(160), default="")
+    specialty: Mapped[str] = mapped_column(String(160), default="")
+    course: Mapped[int] = mapped_column(Integer, default=0)
+    semester: Mapped[int] = mapped_column(Integer, default=0)
+    study_form: Mapped[str] = mapped_column(String(32), default="")
+    student_card: Mapped[str] = mapped_column(String(48), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(24), default="manual")  # manual|legacy_import
 
 
 class ChangeLog(Base):
@@ -352,6 +398,23 @@ class ChatMessage(Base):
     provider: Mapped[str] = mapped_column(String(32), default="")
     model: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class LegacyImportRecord(Base):
+    """Журнал импорта из Student Edition: что и когда перенесено (идемпотентность)."""
+
+    __tablename__ = "legacy_import_records"
+    __table_args__ = (UniqueConstraint("owner_id", "source_path", "kind", "source_key",
+                                       name="uq_legacy_import_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_path: Mapped[str] = mapped_column(String(400), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)      # task | lesson | profile
+    source_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(36), default="")
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 # --------------------------------------------------------------------------- #

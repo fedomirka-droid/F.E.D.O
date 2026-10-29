@@ -130,6 +130,12 @@ def apply_action(db, settings, owner_id: str, task: Task, action: str,
         data = {"status": "todo", "completed_at": None}
     elif action == "extend":
         data = {"planned_minutes": (task.planned_minutes or 0) + (minutes or 15)}
+    elif action == "snooze":
+        # «Отложить на 15 минут»: сдвигаем дедлайн и напоминание, план не растёт
+        shift = timedelta(minutes=minutes or 15)
+        data = {}
+        data["due_at"] = (task.due_at or now) + shift
+        data["remind_at"] = (task.remind_at or now) + shift
     elif action == "time":
         data = {"actual_minutes": (task.actual_minutes or 0) + max(minutes, 1)}
     else:

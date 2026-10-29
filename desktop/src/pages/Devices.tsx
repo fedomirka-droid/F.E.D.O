@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   formatDateTime,
   get,
+  patch,
   post,
   type CommandAction,
   type Device,
@@ -19,6 +20,9 @@ export function Devices() {
   const [form, setForm] = useState({ name: "", kind: "desktop", capabilities: "" });
   const [wolTarget, setWolTarget] = useState<Device | null>(null);
   const [wolMac, setWolMac] = useState("");
+  const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
+  const [allowlistTarget, setAllowlistTarget] = useState<Device | null>(null);
+  const [allowForm, setAllowForm] = useState({ label: "", command: "" });
   const { busy, run } = useAsyncAction();
   const toast = useToast();
 
@@ -48,6 +52,21 @@ export function Devices() {
       setForm({ name: "", kind: "desktop", capabilities: "" });
       await load();
     }, "Не удалось зарегистрировать устройство");
+
+  const createPairingCode = () =>
+    run(async () => {
+      const result = await post<{ code: string; expires_at: string }>("/api/devices/pairing-code",
+        { device_name: form.name.trim(), device_kind: form.kind, ttl_minutes: 10 });
+      setPairing(result);
+      setRegistering(false);
+    }, "Не удалось создать код привязки");
+
+  const saveAllowlist = (device: Device, list: { label: string; command: string }[]) =>
+    run(async () => {
+      const updated = await patch<Device>(`/api/devices/${device.id}`, { command_allowlist: list });
+      toast.success(`Белый список: ${updated.command_allowlist.length} прилож.`);
+      await load();
+    }, "Не удалось сохранить белый список");
 
   const send = (device: Device, action: string, params: Record<string, unknown> = {}) =>
     run(async () => {
@@ -132,21 +151,42 @@ export function Devices() {
                   ) : null}
                 </div>
                 <div className="divider" style={{ margin: "12px 0" }} />
-                <div className="row" style={{ gap: 6 }}>
-                  {actions.filter((action) => !["wol"].includes(action.action)).map((action) => (
-                    <button key={action.action}
-                            className={`btn small ${action.dangerous ? "danger" : ""}`}
-                            title={action.description}
-                            disabled={busy || device.status === "revoked"}
-                            onClick={() => send(device, action.action)}>
-                      {action.action}
-                    </button>
-                  ))}
+                <div className="row wrap" style={{ gap: 6 }}>
+                  {actions
+                    .filter((action) => !["wol", "launch", "stop_app"].includes(action.action))
+                    .map((action) => (
+                      <button key={action.action}
+                              className={`btn small ${action.dangerous ? "danger" : ""}`}
+                              title={action.description}
+                              disabled={busy || device.status === "revoked"}
+                              onClick={() => send(device, action.action)}>
+                        {action.action}
+                      </button>
+                    ))}
                   <button className="btn small" disabled={busy} onClick={() => setWolTarget(device)}>wol</button>
+                  <button className="btn small ghost" onClick={() => setAllowlistTarget(device)}>
+                    ⚙ приложения ({device.command_allowlist?.length ?? 0})
+                  </button>
                   <span className="spacer" />
                   <button className="btn small ghost" onClick={() => rotate(device)}>↻ токен</button>
                   <button className="btn small danger" onClick={() => revoke(device)}>отозвать</button>
                 </div>
+                {(device.command_allowlist?.length ?? 0) > 0 ? (
+                  <div className="small stack" style={{ marginTop: 8, gap: 4 }}>
+                    <span className="label">Разрешённые приложения</span>
+                    {device.command_allowlist.map((app) => (
+                      <div className="row between" key={app.label}>
+                        <span className="truncate">{app.label}</span>
+                        <span className="row" style={{ gap: 4 }}>
+                          <button className="btn small" disabled={busy}
+                                  onClick={() => send(device, "launch", { app: app.label })}>запуск</button>
+                          <button className="btn small ghost" disabled={busy}
+                                  onClick={() => send(device, "stop_app", { app: app.label })}>стоп</button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -157,6 +197,7 @@ export function Devices() {
         <Modal title="Новое устройство" onClose={() => setRegistering(false)}
                footer={<>
                  <button className="btn ghost" onClick={() => setRegistering(false)}>Отмена</button>
+                 <button className="btn" onClick={createPairingCode} disabled={busy}>Код привязки</button>
                  <button className="btn primary" onClick={register} disabled={busy}>Создать</button>
                </>}>
           <Field label="Имя устройства">
@@ -176,7 +217,74 @@ export function Devices() {
             <input className="input" value={form.capabilities}
                    onChange={(event) => setForm({ ...form, capabilities: event.target.value })} />
           </Field>
-          <p className="hint">Токен и секрет канала показываются один раз — их вводят в F.E.D.O. Agent.</p>
+          <p className="hint">
+            Токен и секрет канала показываются один раз — их вводят в F.E.D.O. Agent.
+            Второй способ — «Код привязки»: устройство само заберёт токен командой
+            <span className="mono"> --pair-code</span>.
+          </p>
+        </Modal>
+      ) : null}
+
+      {pairing ? (
+        <Modal title="Код привязки устройства" onClose={() => setPairing(null)}
+               footer={<button className="btn primary" onClick={() => setPairing(null)}>Готово</button>}>
+          <p className="muted small">
+            Одноразовый код, действует до {formatDateTime(pairing.expires_at)}. В открытом виде в базе не хранится.
+          </p>
+          <div className="card center" style={{ padding: 18 }}>
+            <div className="mono" style={{ fontSize: 28, letterSpacing: 4 }}>{pairing.code}</div>
+          </div>
+          <pre className="mono small" style={{ whiteSpace: "pre-wrap", background: "var(--surface-2)", padding: 10, borderRadius: 8 }}>
+{`python -m ecosystem.agent --hub <HUB_URL> \\
+  --pair-code ${pairing.code} \\
+  --name "${form.name || "Устройство"}" --kind ${form.kind}`}
+          </pre>
+        </Modal>
+      ) : null}
+
+      {allowlistTarget ? (
+        <Modal title={`Разрешённые приложения: ${allowlistTarget.name}`}
+               onClose={() => setAllowlistTarget(null)}
+               footer={<button className="btn primary" onClick={() => setAllowlistTarget(null)}>Готово</button>}>
+          <p className="hint">
+            Агент запускает и останавливает только эти приложения. Свободный shell запрещён,
+            команда должна совпадать целиком.
+          </p>
+          <div className="stack">
+            {allowlistTarget.command_allowlist?.map((app) => (
+              <div className="row between" key={app.label}>
+                <div className="grow">
+                  <div className="truncate">{app.label}</div>
+                  <div className="small faint mono truncate">{app.command}</div>
+                </div>
+                <button className="btn small danger" disabled={busy} onClick={() =>
+                  saveAllowlist(allowlistTarget,
+                    allowlistTarget.command_allowlist.filter((item) => item.label !== app.label))}>✕</button>
+              </div>
+            ))}
+            {allowlistTarget.command_allowlist?.length ? null : <Empty text="Список пуст" />}
+          </div>
+          <div className="divider" />
+          <Field label="Название">
+            <input className="input" placeholder="Блокнот" value={allowForm.label}
+                   onChange={(event) => setAllowForm({ ...allowForm, label: event.target.value })} />
+          </Field>
+          <Field label="Полный путь к исполняемому файлу">
+            <input className="input mono" placeholder="C:\Windows\notepad.exe" value={allowForm.command}
+                   onChange={(event) => setAllowForm({ ...allowForm, command: event.target.value })} />
+          </Field>
+          <button className="btn" disabled={busy}
+                  onClick={() => {
+                    if (!allowForm.label.trim() || !allowForm.command.trim()) {
+                      toast.error("Заполни название и путь");
+                      return;
+                    }
+                    const next = [...(allowlistTarget.command_allowlist || []),
+                                  { label: allowForm.label.trim(), command: allowForm.command.trim() }];
+                    saveAllowlist(allowlistTarget, next)
+                      .then(() => setAllowForm({ label: "", command: "" }))
+                      .catch(() => undefined);
+                  }}>＋ Добавить</button>
         </Modal>
       ) : null}
 

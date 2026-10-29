@@ -10,7 +10,10 @@ import {
   type AiModels,
   type AiSettings,
   type AiUsage,
+  type BackendHealth,
   type Conflict,
+  type StudentProfile,
+  type StudentStatus,
   type SyncStatus,
 } from "../api";
 import { Badge, Empty, Field, Spinner, useAsyncAction, useToast } from "../ui";
@@ -18,6 +21,7 @@ import { Badge, Empty, Field, Spinner, useAsyncAction, useToast } from "../ui";
 type Session = { id: string; user_agent: string; created_at: string; last_seen_at: string; revoked: boolean; current: boolean };
 type TelegramAccount = { id: number; telegram_id: number; username: string; linked_at: string; revoked: boolean };
 type AuditEntry = { id: number; actor: string; action: string; target: string; created_at: string };
+type BackupItem = { name: string; size: number; modified_at: string };
 
 export function Settings({
   theme,
@@ -40,9 +44,18 @@ export function Settings({
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [keys, setKeys] = useState<string[]>([]);
   const [linkCode, setLinkCode] = useState<{ code: string; expires_at: string } | null>(null);
+  const [backups, setBackups] = useState<BackupItem[]>([]);
+  const [backupDir, setBackupDir] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [hubUrl, setHubUrl] = useState("");
+  const [health, setHealth] = useState<BackendHealth | null>(null);
+  const [profile, setProfile] = useState<StudentProfile | null>(null);
+  const [studentStatus, setStudentStatus] = useState<StudentStatus | null>(null);
+  const [profileForm, setProfileForm] = useState({
+    group_name: "", college: "", specialty: "", course: 0, semester: 0,
+    study_form: "", student_card: "", notes: "",
+  });
   const [loading, setLoading] = useState(true);
   const { busy, run } = useAsyncAction();
   const toast = useToast();
@@ -58,6 +71,10 @@ export function Settings({
       get<{ accounts: TelegramAccount[] }>("/api/telegram/accounts"),
       get<{ entries: AuditEntry[] }>("/api/audit?limit=20"),
       get<{ configured: string[] }>("/api/ai/keys"),
+      get<BackendHealth>("/api/health"),
+      get<StudentProfile>("/api/student/profile"),
+      get<StudentStatus>("/api/student/status"),
+      get<{ backups: BackupItem[]; directory: string }>("/api/system/backups"),
     ]);
     if (results[0].status === "fulfilled") setAi(results[0].value);
     if (results[1].status === "fulfilled") setModels(results[1].value);
@@ -71,12 +88,39 @@ export function Settings({
     if (results[6].status === "fulfilled") setAccounts(results[6].value.accounts);
     if (results[7].status === "fulfilled") setAudit(results[7].value.entries);
     if (results[8].status === "fulfilled") setKeys(results[8].value.configured);
+    if (results[9].status === "fulfilled") setHealth(results[9].value);
+    if (results[10].status === "fulfilled") {
+      const value = results[10].value;
+      setProfile(value);
+      setProfileForm({
+        group_name: value.group_name || "", college: value.college || "",
+        specialty: value.specialty || "", course: value.course || 0,
+        semester: value.semester || 0, study_form: value.study_form || "",
+        student_card: value.student_card || "", notes: value.notes || "",
+      });
+    }
+    if (results[11].status === "fulfilled") setStudentStatus(results[11].value);
+    if (results[12]?.status === "fulfilled") {
+      setBackups(results[12].value.backups);
+      setBackupDir(results[12].value.directory);
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const saveProfile = () =>
+    run(async () => {
+      const updated = await put<StudentProfile>("/api/student/profile", {
+        ...profileForm,
+        course: Number(profileForm.course) || 0,
+        semester: Number(profileForm.semester) || 0,
+      });
+      setProfile(updated);
+      toast.success("Профиль студента сохранён");
+    }, "Не удалось сохранить профиль");
 
   const saveAi = (patchBody: Partial<AiSettings>) =>
     run(async () => {
@@ -127,6 +171,13 @@ export function Settings({
       const result = await post<{ code: string; expires_at: string }>("/api/telegram/link");
       setLinkCode(result);
     }, "Не удалось создать код");
+
+  const makeBackup = () =>
+    run(async () => {
+      const result = await post<{ ok: boolean; path: string; size: number }>("/api/system/backup");
+      toast.success(`Копия создана: ${result.path.split(/[\\/]/).pop()}`);
+      await load();
+    }, "Не удалось создать резервную копию");
 
   const unlink = (account: TelegramAccount) =>
     run(async () => {
@@ -320,6 +371,123 @@ export function Settings({
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="grid cols-2">
+        <div className="card">
+          <div className="card-title">
+            <h3>Студенческий профиль</h3>
+            {profile ? <Badge tone={profile.source === "legacy_import" ? "accent" : ""}>{profile.source === "legacy_import" ? "импорт" : "вручную"}</Badge> : null}
+          </div>
+          <div className="grid cols-2">
+            <Field label="Группа">
+              <input className="input" value={profileForm.group_name}
+                     onChange={(event) => setProfileForm({ ...profileForm, group_name: event.target.value })} />
+            </Field>
+            <Field label="Зачётка">
+              <input className="input" value={profileForm.student_card}
+                     onChange={(event) => setProfileForm({ ...profileForm, student_card: event.target.value })} />
+            </Field>
+            <Field label="Специальность">
+              <input className="input" value={profileForm.specialty}
+                     onChange={(event) => setProfileForm({ ...profileForm, specialty: event.target.value })} />
+            </Field>
+            <Field label="Колледж">
+              <input className="input" value={profileForm.college}
+                     onChange={(event) => setProfileForm({ ...profileForm, college: event.target.value })} />
+            </Field>
+            <Field label="Курс">
+              <input className="input" type="number" min={0} max={8} value={profileForm.course}
+                     onChange={(event) => setProfileForm({ ...profileForm, course: Number(event.target.value) })} />
+            </Field>
+            <Field label="Семестр">
+              <input className="input" type="number" min={0} max={16} value={profileForm.semester}
+                     onChange={(event) => setProfileForm({ ...profileForm, semester: Number(event.target.value) })} />
+            </Field>
+          </div>
+          <div className="row between" style={{ marginTop: 10 }}>
+            <span className="hint">Профиль синхронизируется и виден в Telegram.</span>
+            <button className="btn primary small" onClick={saveProfile} disabled={busy}>Сохранить</button>
+          </div>
+          <div className="divider" />
+          <div className="stack small">
+            <div className="row between">
+              <span className="muted">Student Edition MVP</span>
+              <Badge tone={studentStatus?.integration === "blocked" ? "warning" : "success"}>
+                {studentStatus?.integration === "blocked" ? "интеграция заблокирована" : "готов к импорту"}
+              </Badge>
+            </div>
+            {studentStatus?.blocked_reason ? (
+              <span className="hint">{studentStatus.blocked_reason}</span>
+            ) : null}
+            {studentStatus && studentStatus.found.length > 0 ? (
+              <div className="stack small">
+                <span className="label">Найдено</span>
+                {studentStatus.found.slice(0, 5).map((item) => (
+                  <span key={item.path} className="small mono truncate">{item.path}</span>
+                ))}
+              </div>
+            ) : null}
+            {studentStatus && studentStatus.missing.length > 0 ? (
+              <details className="small">
+                <summary className="muted">Чего не хватает ({studentStatus.missing.length})</summary>
+                <div className="stack small" style={{ marginTop: 6 }}>
+                  {studentStatus.missing.map((item) => (
+                    <span key={item.path} className="mono small">{item.path} — {item.why}</span>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+            {studentStatus?.imported ? (
+              <span className="hint">
+                Импортировано: задач {studentStatus.imported.tasks}, занятий {studentStatus.imported.schedule}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title"><h3>Резервное копирование и HUB</h3></div>
+          <div className="stack small">
+            <div className="row between">
+              <span className="muted">Роль backend</span>
+              <Badge tone="accent">{health?.role ?? "—"}</Badge>
+            </div>
+            <div className="row between">
+              <span className="muted">Версия экосистемы</span>
+              <span className="mono">{health?.version ?? "—"}</span>
+            </div>
+            <div className="row between">
+              <span className="muted">Ядро Core</span>
+              <span className="mono">{health?.core ?? "—"}</span>
+            </div>
+            <div className="divider" />
+            <div className="row between">
+              <span className="muted">Копий в архиве</span>
+              <Badge>{backups.length}</Badge>
+            </div>
+            {backups.slice(0, 4).map((item) => (
+              <div className="row between small" key={item.name}>
+                <span className="mono truncate" style={{ maxWidth: 210 }}>{item.name}</span>
+                <span className="faint">{(item.size / 1024).toFixed(0)} КБ</span>
+              </div>
+            ))}
+            <button className="btn primary small" onClick={makeBackup} disabled={busy}>
+              {busy ? <Spinner /> : null} Создать копию сейчас
+            </button>
+            <p className="hint">
+              Копия делается через SQLite backup API (WAL учитывается), проверяется на
+              читаемость и попадает в <span className="mono">{backupDir || "backups/"}</span>.
+              Восстановление: <span className="mono">scripts/ubuntu/restore-hub.sh</span>{" "}
+              или копирование файла при остановленном Desktop.
+            </p>
+            <p className="hint">
+              Данные Desktop: <span className="mono">%APPDATA%\FEDO\</span> — база, ключ шифрования,
+              бэкапы и логи. Ключ <span className="mono">secret.key</span> не синхронизируется:
+              без него расшифровать API-ключи нельзя, храни его отдельно.
+            </p>
+          </div>
         </div>
       </div>
 

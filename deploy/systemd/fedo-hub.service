@@ -1,5 +1,7 @@
-# F.E.D.O. HUB на VPS (альтернатива Docker Compose).
-# Ограниченные ресурсы, отдельный пользователь, никаких других сервисов.
+# F.E.D.O. HUB (Personal Edition) — шаблон systemd.
+# Плейсхолдеры @APP_DIR@ / @DATA_DIR@ / @ENV_FILE@ / @PORT@ подставляет
+# scripts/ubuntu/install.sh. Юнит изолирован: свои имя, каталоги, лимиты.
+# Чужие сервисы (например GGSELL) не затрагиваются.
 [Unit]
 Description=F.E.D.O. HUB (Personal Edition)
 After=network-online.target
@@ -9,18 +11,21 @@ Wants=network-online.target
 Type=simple
 User=fedo
 Group=fedo
-WorkingDirectory=/opt/fedo/app
-EnvironmentFile=/opt/fedo/.env
+WorkingDirectory=@APP_DIR@/current
+EnvironmentFile=@ENV_FILE@
 Environment=FEDO_ROLE=hub
-Environment=FEDO_DATA_DIR=/opt/fedo/data
-ExecStart=/opt/fedo/venv/bin/python -m ecosystem.backend --role hub --host 127.0.0.1 --port 8765
+Environment=FEDO_DATA_DIR=@DATA_DIR@
+Environment=FEDO_HOST=127.0.0.1
+Environment=FEDO_PORT=@PORT@
+ExecStart=@APP_DIR@/current/.venv/bin/python -m ecosystem.backend --role hub --host 127.0.0.1 --port @PORT@
 Restart=on-failure
 RestartSec=5
+# Минимальные привилегии: запись только в каталог данных
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/fedo/data
+ReadWritePaths=@DATA_DIR@
 MemoryMax=512M
 CPUQuota=100%
 
