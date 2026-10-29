@@ -1,0 +1,24 @@
+[Unit]
+Description=F.E.D.O. Mini (Telegram bot)
+After=network-online.target fedo-hub.service
+Wants=fedo-hub.service
+
+[Service]
+Type=simple
+User=fedo
+Group=fedo
+WorkingDirectory=/opt/fedo/app
+EnvironmentFile=/opt/fedo/.env
+Environment=FEDO_ROLE=desktop
+Environment=FEDO_DATA_DIR=/opt/fedo/data-mini
+ExecStart=/opt/fedo/venv/bin/python -m ecosystem.mini
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fedo/data-mini
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

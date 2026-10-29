@@ -1,0 +1,28 @@
+# F.E.D.O. HUB на VPS (альтернатива Docker Compose).
+# Ограниченные ресурсы, отдельный пользователь, никаких других сервисов.
+[Unit]
+Description=F.E.D.O. HUB (Personal Edition)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fedo
+Group=fedo
+WorkingDirectory=/opt/fedo/app
+EnvironmentFile=/opt/fedo/.env
+Environment=FEDO_ROLE=hub
+Environment=FEDO_DATA_DIR=/opt/fedo/data
+ExecStart=/opt/fedo/venv/bin/python -m ecosystem.backend --role hub --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/fedo/data
+MemoryMax=512M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

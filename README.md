@@ -52,6 +52,55 @@ Windows + Linux.
 
 ---
 
+## F.E.D.O. Ecosystem — Personal Edition (v2.0)
+
+Поверх Core построена персональная экосистема из четырёх компонентов.
+Core при этом **не изменён**: его монитор, личности, prompt-ы и команды
+переиспользуются через `ecosystem/backend/services/core_bridge.py`.
+
+| Компонент | Что это | Где код |
+|-----------|---------|---------|
+| **Desktop** | Tauri 2 + React: чат, задачи, календарь, расписание, устройства, монитор, настройки; локальный backend как sidecar | `desktop/`, `ecosystem/backend/` |
+| **HUB** | FastAPI + SQLite: авторизация, устройства, синхронизация, API для бота | `ecosystem/backend/` (role=hub) |
+| **Mini** | Telegram-бот Aiogram 3 без собственной БД задач | `ecosystem/mini/` |
+| **GPU Core** | Agent + AI-шлюз на домашнем ПК с RTX 3080 | `ecosystem/agent/` |
+
+Ключевые возможности:
+
+* AI Router 2.0 — режимы `local_only / hybrid / cloud_preferred / manual`,
+  жёсткий запрет облака, отдельное разрешение на передачу истории, лимиты,
+  отмена, стриминг, учёт расходов;
+* offline-first синхронизация: UUID, версии, tombstones, outbox, идемпотентные
+  операции, backoff, разрешение конфликтов без потери данных;
+* импорт расписания ИС-21 из XLS/XLSX (merged cells, соседние группы, даты);
+* Device Manager с белым списком команд, подписью канала HMAC и подтверждением
+  опасных действий; Wake-on-LAN;
+* безопасность: scrypt-пароли, opaque-сессии, отдельные токены устройств,
+  шифрование API-ключей, rate limit, аудит.
+
+### Быстрый старт (локально)
+
+```bash
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements-ecosystem.txt
+
+# 1) локальный backend Desktop (миграции применятся автоматически)
+FEDO_ROLE=desktop python -m ecosystem.backend --role desktop --port 8765
+
+# 2) интерфейс
+cd desktop && npm install && npm run dev     # http://localhost:5173
+```
+
+Дальше: `docs/ECOSYSTEM.md`, `docs/DESKTOP_BUILD.md`, `docs/DEPLOY.md`,
+`docs/MINI_INTEGRATION.md`, `docs/ECOSYSTEM_STATUS.md`.
+
+Тесты экосистемы (без сети и без реального железа):
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
 ## Архитектура
 
 ```

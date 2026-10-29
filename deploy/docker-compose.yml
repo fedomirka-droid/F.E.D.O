@@ -1,0 +1,79 @@
+# F.E.D.O. Ecosystem — HUB + Telegram-бот.
+# Изоляция от других проектов (например GGSELL): своя сеть, свои тома,
+# свои имена контейнеров, публикуется только loopback-порт для nginx.
+name: fedo
+
+networks:
+  fedo_net:
+    name: fedo_net
+    driver: bridge
+
+volumes:
+  fedo_data:
+    name: fedo_data
+  fedo_mini_data:
+    name: fedo_mini_data
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: fedo-hub:2.0.0
+    container_name: fedo_hub
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      FEDO_ROLE: hub
+      FEDO_DATA_DIR: /data
+      FEDO_HOST: 0.0.0.0
+      FEDO_PORT: "8765"
+    volumes:
+      - fedo_data:/data
+    ports:
+      # только локально: снаружи — через nginx проекта F.E.D.O.
+      - "127.0.0.1:8765:8765"
+    networks: [fedo_net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mini:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: fedo-hub:2.0.0
+    container_name: fedo_mini
+    restart: unless-stopped
+    depends_on:
+      hub:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      FEDO_ROLE: desktop
+      FEDO_DATA_DIR: /data-mini
+      FEDO_HUB_URL: http://hub:8765
+    command: ["python", "-m", "ecosystem.mini"]
+    volumes:
+      - fedo_mini_data:/data-mini
+    networks: [fedo_net]
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.5"

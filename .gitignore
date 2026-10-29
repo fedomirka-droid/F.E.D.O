@@ -42,3 +42,18 @@ desktop.ini
 # Temporary files
 *.tmp
 *.bak
+# F.E.D.O. Ecosystem runtime
+data-dev/
+data/
+.venv/
+ecosystem/**/__pycache__/
+desktop/node_modules/
+desktop/dist/
+*.db
+*.db-wal
+*.db-shm
+deploy/.env
+
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/README.md
+desktop/src-tauri/target/

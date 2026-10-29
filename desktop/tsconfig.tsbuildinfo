@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/ui.tsx","./src/components/Layout.tsx","./src/pages/Assistant.tsx","./src/pages/Calendar.tsx","./src/pages/Dashboard.tsx","./src/pages/Devices.tsx","./src/pages/Login.tsx","./src/pages/Monitor.tsx","./src/pages/Schedule.tsx","./src/pages/Settings.tsx","./src/pages/Tasks.tsx"],"version":"5.9.3"}

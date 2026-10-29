@@ -1,0 +1,14 @@
+# F.E.D.O. Ecosystem Personal Edition — runtime (backend, HUB, agent, bot)
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+sqlalchemy>=2.0,<3.0
+alembic>=1.13,<2.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
+httpx>=0.27,<1.0
+python-multipart>=0.0.12
+openpyxl>=3.1,<4.0
+xlrd>=2.0,<3.0
+psutil>=6.0
+cryptography>=43
+aiogram>=3.13,<4.0
